@@ -20,20 +20,105 @@ function renderPage({ token }) {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>WhatsApp Setup</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; text-align: center; }
-    h1 { font-size: 1.25rem; }
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      background: #f5f5f5;
+      color: #222;
+    }
+    .app-header {
+      flex-shrink: 0;
+      text-align: center;
+      padding: 1rem 1.25rem 0.5rem;
+      background: #fff;
+      border-bottom: 1px solid #e8e8e8;
+    }
+    h1 { font-size: 1.25rem; margin: 0 0 0.35rem; }
     h2 { font-size: 1rem; text-align: left; margin: 0 0 0.75rem; }
-    .status { color: #444; margin: 1rem 0; }
+    .status { color: #444; margin: 0; font-size: 0.9rem; }
+    .app-main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      min-height: 0;
+      padding: 1rem 1.25rem;
+    }
+    .app-columns {
+      display: flex;
+      gap: 1rem;
+      align-items: stretch;
+      flex-shrink: 0;
+    }
     #qr-section {
+      flex: 0 0 300px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
       border: 1px dashed #ccc;
       border-radius: 8px;
       padding: 1rem;
-      margin: 1rem 0;
-      min-height: 120px;
+      background: #fff;
+      min-height: 320px;
     }
     #qr-hint { color: #666; font-size: 0.9rem; margin: 0.5rem 0; }
-    #qr { border: 1px solid #ddd; border-radius: 8px; display: none; margin: 0.5rem auto; }
-    #instructions { text-align: left; line-height: 1.6; max-width: 360px; margin: 0.75rem auto 0; display: none; }
+    .qr-frame {
+      width: 256px;
+      height: 256px;
+      margin: 0.5rem auto;
+      position: relative;
+      flex-shrink: 0;
+    }
+    .qr-skeleton {
+      display: none;
+      position: absolute;
+      inset: 0;
+      border-radius: 8px;
+      border: 1px solid #e0e0e0;
+      background: #f3f3f3;
+      overflow: hidden;
+    }
+    .qr-skeleton.visible { display: block; }
+    .qr-skeleton::before {
+      content: '';
+      position: absolute;
+      inset: 20px;
+      border: 2px dashed #d5d5d5;
+      border-radius: 6px;
+    }
+    .qr-skeleton::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(255, 255, 255, 0.75) 45%,
+        rgba(255, 255, 255, 0.75) 55%,
+        transparent 100%
+      );
+      animation: qr-shimmer 1.5s ease-in-out infinite;
+      transform: translateX(-100%);
+    }
+    @keyframes qr-shimmer {
+      100% { transform: translateX(100%); }
+    }
+    #qr {
+      width: 256px;
+      height: 256px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      display: none;
+      position: relative;
+      z-index: 1;
+      background: #fff;
+    }
+    #instructions { text-align: left; line-height: 1.6; width: 100%; margin: 0.75rem 0 0; padding-left: 1.1rem; font-size: 0.85rem; }
     #logout-btn {
       background: #fff;
       color: #c00;
@@ -43,13 +128,86 @@ function renderPage({ token }) {
     }
     .ready { color: #0a7; font-weight: 600; }
     .error { color: #c00; }
+    .session-steps {
+      display: flex;
+      gap: 0.35rem;
+      width: 100%;
+      margin: 0.65rem 0 0.5rem;
+      font-size: 0.7rem;
+    }
+    .session-step {
+      flex: 1;
+      text-align: center;
+      padding: 0.35rem 0.2rem;
+      border-radius: 6px;
+      background: #f0f0f0;
+      color: #888;
+      line-height: 1.2;
+    }
+    .session-step.active {
+      background: #e8f5f3;
+      color: #128c7e;
+      font-weight: 600;
+    }
+    .session-step.done {
+      background: #e8f5f3;
+      color: #0a7;
+    }
+    .progress-wrap {
+      width: 100%;
+      margin: 0.35rem 0 0.5rem;
+    }
+    .progress-wrap[hidden] { display: none !important; }
+    .progress-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.78rem;
+      color: #666;
+      margin-bottom: 0.35rem;
+    }
+    #progress-percent {
+      font-weight: 600;
+      color: #128c7e;
+      font-variant-numeric: tabular-nums;
+      min-width: 2.5rem;
+      text-align: right;
+    }
+    .progress-track {
+      height: 6px;
+      background: #e8e8e8;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: #128c7e;
+      border-radius: 999px;
+      transition: width 0.35s ease;
+    }
+    .progress-bar.indeterminate {
+      width: 40% !important;
+      animation: progress-indeterminate 1.2s ease-in-out infinite;
+    }
+    @keyframes progress-indeterminate {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(350%); }
+    }
+    #qr-section.is-connected { border-style: solid; border-color: #b8e0db; }
     .panel {
       text-align: left;
       border: 1px solid #e0e0e0;
       border-radius: 8px;
       padding: 1rem;
-      margin: 1.25rem 0;
-      background: #fafafa;
+      background: #fff;
+    }
+    #target-panel {
+      flex: 1;
+      min-width: 0;
+      overflow-y: auto;
+      max-height: 520px;
     }
     .field { margin-bottom: 0.75rem; }
     .field label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.25rem; }
@@ -189,8 +347,22 @@ function renderPage({ token }) {
       color: #666;
       margin: 0.25rem 0 0;
     }
-    .logs-title { text-align: left; font-size: 0.9rem; font-weight: 600; margin: 1.5rem 0 0.5rem; }
+    .logs-section {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .logs-title {
+      flex-shrink: 0;
+      text-align: left;
+      font-size: 0.9rem;
+      font-weight: 600;
+      margin: 0 0 0.5rem;
+    }
     #logs {
+      flex: 1;
+      min-height: 0;
       text-align: left;
       background: #1e1e1e;
       color: #d4d4d4;
@@ -199,32 +371,60 @@ function renderPage({ token }) {
       line-height: 1.45;
       padding: 0.75rem 1rem;
       border-radius: 8px;
-      max-height: 360px;
       overflow-y: auto;
       white-space: pre-wrap;
       word-break: break-word;
       margin: 0;
+      border: 1px solid #333;
+    }
+    @media (max-width: 768px) {
+      .app-columns { flex-direction: column; }
+      #qr-section { flex: none; width: 100%; min-height: auto; }
+      #target-panel { max-height: none; }
     }
   </style>
 </head>
 <body>
-  <h1>WhatsApp Sheets Logger — Setup</h1>
-  <p id="status" class="status">Loading...</p>
-  <section id="qr-section">
-    <strong>WhatsApp login</strong>
-    <p id="qr-hint">Connecting… QR will appear here in a few seconds.</p>
-    <img id="qr" alt="WhatsApp QR code" width="280" height="280" />
-    <ol id="instructions">
-    <li>Open <strong>WhatsApp</strong> on your phone</li>
-    <li>Go to <strong>Settings → Linked devices → Link a device</strong></li>
-    <li>Scan the QR code above</li>
-    </ol>
-    <button type="button" id="logout-btn" style="display:none">Log out &amp; show new QR</button>
-  </section>
+  <header class="app-header">
+    <h1>WhatsApp Sheets Logger — Setup</h1>
+    <p id="status" class="status">Loading...</p>
+  </header>
 
-  <section class="panel session-off" id="target-panel">
+  <main class="app-main">
+    <div class="app-columns">
+      <section id="qr-section">
+        <strong>WhatsApp login</strong>
+        <div class="session-steps" id="session-steps">
+          <div class="session-step" data-step="boot">Launch</div>
+          <div class="session-step" data-step="qr">Scan QR</div>
+          <div class="session-step" data-step="sync">Connect</div>
+          <div class="session-step" data-step="ready">Ready</div>
+        </div>
+        <div class="progress-wrap" id="progress-wrap">
+          <div class="progress-meta">
+            <span id="progress-label">Starting WhatsApp session…</span>
+            <span id="progress-percent">0%</span>
+          </div>
+          <div class="progress-track">
+            <div id="progress-bar" class="progress-bar"></div>
+          </div>
+        </div>
+        <p id="qr-hint">Connecting… QR will appear here in a few seconds.</p>
+        <div class="qr-frame" id="qr-frame">
+          <div class="qr-skeleton visible" id="qr-skeleton" aria-hidden="true"></div>
+          <img id="qr" alt="WhatsApp QR code" width="256" height="256" />
+        </div>
+        <ol id="instructions">
+          <li>Open <strong>WhatsApp</strong> on your phone</li>
+          <li>Go to <strong>Settings → Linked devices → Link a device</strong></li>
+          <li>Scan the QR code on the left</li>
+        </ol>
+        <button type="button" id="logout-btn" style="display:none">Log out &amp; show new QR</button>
+      </section>
+
+      <section class="panel session-off" id="target-panel">
     <h2>Target messages</h2>
-    <p class="session-hint" id="target-session-hint">Log in with WhatsApp above to configure targets.</p>
+    <p class="session-hint" id="target-session-hint">Log in with WhatsApp on the left to configure targets.</p>
     <p id="target-source"></p>
     <p style="font-size:0.85rem;color:#555;margin:0 0 0.75rem;">
       Select a group, then add one or more members to monitor. Or type names manually.
@@ -262,10 +462,14 @@ function renderPage({ token }) {
       <p id="target-feedback"></p>
       <p id="target-active"></p>
     </form>
-  </section>
+      </section>
+    </div>
 
-  <p class="logs-title">Logs</p>
-  <pre id="logs"></pre>
+    <section class="logs-section">
+      <p class="logs-title">Logs</p>
+      <pre id="logs"></pre>
+    </section>
+  </main>
   <script>
     const token = ${JSON.stringify(token)};
     let logIndex = 0;
@@ -740,39 +944,159 @@ function renderPage({ token }) {
       monitoring: null
     };
 
-    function updateQrUi(status) {
+    function setQrSkeleton(visible) {
+      document.getElementById('qr-skeleton').classList.toggle('visible', visible);
+    }
+
+    function setQrFrameVisible(visible) {
+      document.getElementById('qr-frame').style.display = visible ? 'block' : 'none';
+    }
+
+    function hideQrImage() {
       const qr = document.getElementById('qr');
+      qr.style.display = 'none';
+      qr.onload = null;
+      qr.onerror = null;
+    }
+
+    function loadQrImage() {
+      const qr = document.getElementById('qr');
+      setQrSkeleton(true);
+      hideQrImage();
+      qr.onload = () => {
+        setQrSkeleton(false);
+        qr.style.display = 'block';
+      };
+      qr.onerror = () => {
+        setQrSkeleton(true);
+        hideQrImage();
+      };
+      qr.src = '/setup/qr.png?token=' + encodeURIComponent(token) + '&t=' + Date.now();
+    }
+
+    let lastQrUiStatus = null;
+
+    function updateStepsUi(status) {
+      const order = ['boot', 'qr', 'sync', 'ready'];
+      const activeIndex = {
+        starting: 0,
+        loading: 0,
+        qr: 1,
+        authenticated: 2,
+        ready: 3,
+        error: -1
+      }[status] ?? -1;
+
+      for (const el of document.querySelectorAll('.session-step')) {
+        const idx = order.indexOf(el.dataset.step);
+        el.classList.remove('active', 'done');
+        if (activeIndex < 0) continue;
+        if (idx < activeIndex) el.classList.add('done');
+        else if (idx === activeIndex) el.classList.add('active');
+      }
+    }
+
+    function updateProgressUi(status, progress, message) {
+      const wrap = document.getElementById('progress-wrap');
+      const bar = document.getElementById('progress-bar');
+      const label = document.getElementById('progress-label');
+      const pctEl = document.getElementById('progress-percent');
+
+      if (status === 'ready' || status === 'error') {
+        wrap.hidden = true;
+        bar.classList.remove('indeterminate');
+        return;
+      }
+
+      wrap.hidden = false;
+      let percent = null;
+      let indeterminate = false;
+      let labelText = message || '';
+
+      if (status === 'starting') {
+        percent = typeof progress === 'number' ? progress : 0;
+        labelText = message || 'Starting WhatsApp session…';
+      } else if (status === 'loading') {
+        percent = typeof progress === 'number' ? progress : 0;
+        labelText = message || 'Loading WhatsApp…';
+      } else if (status === 'qr') {
+        bar.classList.remove('indeterminate');
+        bar.style.width = '100%';
+        pctEl.textContent = 'Scan';
+        label.textContent = message || 'QR ready — scan with your phone';
+        return;
+      } else if (status === 'authenticated') {
+        percent = 100;
+        indeterminate = true;
+        labelText = message || 'QR scanned — syncing account…';
+      }
+
+      bar.classList.toggle('indeterminate', indeterminate);
+      if (indeterminate) {
+        pctEl.textContent = '…';
+      } else if (percent != null) {
+        bar.style.width = Math.max(0, Math.min(100, percent)) + '%';
+        pctEl.textContent = Math.round(percent) + '%';
+      } else {
+        bar.style.width = '0%';
+        pctEl.textContent = '';
+      }
+      label.textContent = labelText;
+    }
+
+    function updateQrUi(status, message) {
+      const statusChanged = status !== lastQrUiStatus;
+      lastQrUiStatus = status;
+      const section = document.getElementById('qr-section');
       const hint = document.getElementById('qr-hint');
       const instructions = document.getElementById('instructions');
       const logoutBtn = document.getElementById('logout-btn');
+      const showScanSteps = status === 'starting' || status === 'loading' || status === 'authenticated' || status === 'qr';
+      const booting = status === 'starting' || status === 'loading';
+
+      section.classList.toggle('is-connected', status === 'ready');
 
       if (status === 'qr') {
-        hint.textContent = 'Scan this QR code with your phone:';
-        qr.style.display = 'inline-block';
-        instructions.style.display = 'block';
+        hint.textContent = message || 'Scan this QR code with your phone:';
+        setQrFrameVisible(true);
         logoutBtn.style.display = 'none';
-        qr.src = '/setup/qr.png?token=' + encodeURIComponent(token) + '&t=' + Date.now();
-      } else if (status === 'starting') {
-        hint.textContent = 'Connecting… QR will appear here in a few seconds.';
-        qr.style.display = 'none';
-        instructions.style.display = 'none';
+        if (statusChanged) loadQrImage();
+      } else if (booting) {
+        hint.textContent = message || 'Connecting… QR will appear here in a few seconds.';
+        setQrFrameVisible(true);
+        setQrSkeleton(true);
+        hideQrImage();
         logoutBtn.style.display = 'none';
       } else if (status === 'authenticated') {
-        hint.textContent = 'QR scanned! Finishing login…';
-        qr.style.display = 'none';
-        instructions.style.display = 'none';
+        hint.textContent = message || 'QR scanned! Finishing login…';
+        setQrFrameVisible(true);
+        setQrSkeleton(true);
+        hideQrImage();
         logoutBtn.style.display = 'none';
       } else if (status === 'ready') {
-        hint.textContent = 'Already logged in — no QR needed. Use Log out below to scan again.';
-        qr.style.display = 'none';
-        instructions.style.display = 'none';
+        hint.textContent = message || 'Already logged in — use Log out below to scan again.';
+        setQrFrameVisible(false);
+        setQrSkeleton(false);
+        hideQrImage();
         logoutBtn.style.display = 'inline-block';
       } else if (status === 'error') {
-        hint.textContent = 'Login error. Try Log out to get a new QR.';
-        qr.style.display = 'none';
-        instructions.style.display = 'none';
+        hint.textContent = message || 'Login error. Try Log out to get a new QR.';
+        setQrFrameVisible(false);
+        setQrSkeleton(false);
+        hideQrImage();
         logoutBtn.style.display = 'inline-block';
       }
+
+      instructions.style.display = showScanSteps ? 'block' : 'none';
+    }
+
+    function updateSessionState(data) {
+      const status = data.status || 'starting';
+      const message = data.message || '';
+      setStatus(message, status);
+      updateStepsUi(status);
+      updateProgressUi(status, data.progress, message);
+      updateQrUi(status, message);
     }
 
     document.getElementById('logout-btn').addEventListener('click', async () => {
@@ -780,8 +1104,12 @@ function renderPage({ token }) {
       btn.disabled = true;
       whatsAppReady = false;
       clearTargetForm();
-      updateQrUi('starting');
-      document.getElementById('qr-hint').textContent = 'Clearing session… new QR coming soon.';
+      lastQrUiStatus = null;
+      updateSessionState({
+        status: 'starting',
+        message: 'Logging out from WhatsApp… this may take up to 25 seconds.',
+        progress: 0
+      });
       try {
         const res = await fetch('/setup/logout?token=' + encodeURIComponent(token), { method: 'POST' });
         const data = await res.json();
@@ -803,8 +1131,7 @@ function renderPage({ token }) {
         if (!res.ok) return;
         const data = await res.json();
 
-        setStatus(data.message, data.status);
-        updateQrUi(data.status);
+        updateSessionState(data);
         const ready = data.ready || data.status === 'ready';
         whatsAppReady = ready;
         document.getElementById('target-panel').classList.toggle('session-off', !ready);
@@ -835,6 +1162,11 @@ function renderPage({ token }) {
       }
     }
 
+    updateSessionState({
+      status: 'starting',
+      message: 'Starting WhatsApp session…',
+      progress: 0
+    });
     tick();
     setInterval(() => tick(), POLL_MS);
   </script>
@@ -858,6 +1190,7 @@ function createSetupServer({
   let currentQr = null;
   let status = 'starting';
   let statusMessage = 'Starting WhatsApp client...';
+  let loadPercent = 0;
   let monitoring = null;
   let server = null;
   const logs = [];
@@ -905,6 +1238,7 @@ function createSetupServer({
     currentQr = null;
     status = 'starting';
     statusMessage = message || 'Session cleared. Waiting for new QR code...';
+    loadPercent = 0;
   }
 
   function appendLog(line) {
@@ -934,6 +1268,7 @@ function createSetupServer({
     res.json({
       status,
       message: statusMessage,
+      progress: loadPercent,
       monitoring,
       ready: isWhatsAppReady ? isWhatsAppReady() : status === 'ready'
     });
@@ -1046,6 +1381,7 @@ function createSetupServer({
     res.json({
       status,
       message: statusMessage,
+      progress: loadPercent,
       ready,
       monitoring: ready ? monitoring : null,
       targets: buildTargetsResponse(),
@@ -1117,30 +1453,42 @@ function createSetupServer({
       currentQr = null;
       status = 'starting';
       statusMessage = message || 'Starting WhatsApp client...';
+      loadPercent = 0;
+    },
+    setLoading(percent, message) {
+      currentQr = null;
+      status = 'loading';
+      loadPercent = Math.max(0, Math.min(100, Number(percent) || 0));
+      statusMessage = message || `Loading WhatsApp ${loadPercent}%…`;
     },
     setQr(qr) {
       currentQr = qr;
       status = 'qr';
       statusMessage = 'Scan this QR code with WhatsApp on your phone.';
+      loadPercent = 100;
     },
     setAuthenticated() {
       currentQr = null;
       status = 'authenticated';
       statusMessage = 'Authenticated. Finishing connection...';
+      loadPercent = 100;
     },
     setReady(message) {
       currentQr = null;
       status = 'ready';
       statusMessage = message || 'Connected. Set targets below if needed.';
+      loadPercent = null;
     },
     setWaitingTargets() {
       status = 'ready';
       statusMessage = 'Connected. Enter group and member name below, then Save.';
+      loadPercent = null;
     },
     setError(message) {
       currentQr = null;
       status = 'error';
       statusMessage = message;
+      loadPercent = null;
     }
   };
 }

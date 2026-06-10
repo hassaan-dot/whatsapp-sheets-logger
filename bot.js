@@ -52,6 +52,7 @@ const membersCache = new Map();
 
 const PUPPETEER_TIMEOUT_MS = Number(process.env.PUPPETEER_TIMEOUT_MS) || 600000;
 const GROUPS_CACHE_MS = 5 * 60 * 1000;
+const LOGOUT_REMOTE_TIMEOUT_MS = 25000;
 const LOGOUT_DESTROY_TIMEOUT_MS = 5000;
 
 function sleep(ms) {
@@ -253,8 +254,9 @@ setupServer = SETUP_TOKEN
         membersCache.clear();
 
         clearTargetConfig();
-        setupServer?.clearSessionState('Clearing session…');
-        log('Clearing local session (skipping slow remote logout)…');
+        setupServer?.clearSessionState('Logging out from WhatsApp…');
+        log('Logging out from WhatsApp (unlinking linked device)…');
+        await unlinkWhatsAppSession();
 
         const destroyPromise = client.destroy().catch((err) => {
           log('Destroy note:', err.message);
@@ -371,6 +373,23 @@ function clearAuthSession() {
   }
 }
 
+async function unlinkWhatsAppSession() {
+  try {
+    await Promise.race([
+      client.logout(),
+      sleep(LOGOUT_REMOTE_TIMEOUT_MS).then(() => {
+        throw new Error(`Remote logout timed out after ${LOGOUT_REMOTE_TIMEOUT_MS / 1000}s`);
+      })
+    ]);
+    log('Removed from WhatsApp Linked devices on your phone.');
+    return true;
+  } catch (err) {
+    log('Remote logout failed:', err.message);
+    log('Local session will still be cleared. If the device stays in Linked devices, remove it manually on your phone.');
+    return false;
+  }
+}
+
 function isRecoverableInitError(err) {
   const msg = String(err?.message || err);
   return (
@@ -403,7 +422,7 @@ const client = new Client({
 
 client.on('loading_screen', (percent, message) => {
   log(`Loading WhatsApp: ${percent}% — ${message}`);
-  setupServer?.setStarting(`Loading WhatsApp ${percent}%…`);
+  setupServer?.setLoading(percent, `Loading WhatsApp ${percent}% — ${message || 'WhatsApp'}`);
 });
 
 client.on('qr', (qr) => {
