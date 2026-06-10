@@ -3,6 +3,7 @@ const QRCode = require('qrcode');
 const { normalizeMembers, memberLabels } = require('./target-config');
 
 const MAX_LOG_LINES = 500;
+const QR_EXPIRY_MS = 50000;
 
 function escapeHtml(text) {
   return String(text)
@@ -195,7 +196,29 @@ function renderPage({ token }) {
       0% { transform: translateX(-100%); }
       100% { transform: translateX(350%); }
     }
-    #qr-section.is-connected { border-style: solid; border-color: #b8e0db; }
+    #qr.expired {
+      opacity: 0.35;
+      filter: grayscale(1);
+    }
+    .qr-expiry {
+      font-size: 0.82rem;
+      color: #666;
+      margin: 0.35rem 0 0;
+      font-variant-numeric: tabular-nums;
+    }
+    .qr-expiry.expired { color: #c00; font-weight: 600; }
+    .qr-expiry.soon { color: #b8860b; font-weight: 600; }
+    .qr-connected-badge {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 0.35rem;
+      color: #0a7;
+      font-weight: 600;
+      font-size: 0.95rem;
+      margin: 0.75rem 0 0.25rem;
+    }
+    .qr-connected-badge.visible { display: flex; }
     .panel {
       text-align: left;
       border: 1px solid #e0e0e0;
@@ -414,6 +437,8 @@ function renderPage({ token }) {
           <div class="qr-skeleton visible" id="qr-skeleton" aria-hidden="true"></div>
           <img id="qr" alt="WhatsApp QR code" width="256" height="256" />
         </div>
+        <p id="qr-expiry" class="qr-expiry" hidden></p>
+        <p id="qr-connected-badge" class="qr-connected-badge">✓ WhatsApp connected</p>
         <ol id="instructions">
           <li>Open <strong>WhatsApp</strong> on your phone</li>
           <li>Go to <strong>Settings → Linked devices → Link a device</strong></li>
@@ -936,6 +961,14 @@ function renderPage({ token }) {
     let initialPoll = true;
     let wasReady = false;
     const POLL_MS = 3000;
+    const POLL_MS_QR = 1500;
+    let pollTimer = null;
+
+    function schedulePoll(status) {
+      const ms = status === 'qr' ? POLL_MS_QR : POLL_MS;
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(() => tick(), ms);
+    }
     const emptyTargets = {
       groupName: '',
       groupId: '',
@@ -971,14 +1004,67 @@ function renderPage({ token }) {
         setQrSkeleton(true);
         hideQrImage();
       };
-      qr.src = '/setup/qr.png?token=' + encodeURIComponent(token) + '&t=' + Date.now();
+      qr.src = '/setup/qr.png?token=' + encodeURIComponent(token) + '&t=' + (lastQrUpdatedAt || Date.now());
     }
 
     let lastQrUiStatus = null;
+    let lastQrUpdatedAt = null;
+    let qrExpiryTimer = null;
+    const QR_EXPIRY_MS = ${QR_EXPIRY_MS};
 
-    function updateStepsUi(status) {
+    function clearQrExpiryTimer() {
+      if (qrExpiryTimer) {
+        clearInterval(qrExpiryTimer);
+        qrExpiryTimer = null;
+      }
+    }
+
+    function formatExpiry(secondsLeft) {
+      if (secondsLeft <= 0) return 'QR expired — new code loading…';
+      return 'QR expires in ' + secondsLeft + 's';
+    }
+
+    function updateQrExpiryUi(qrMeta) {
+      const el = document.getElementById('qr-expiry');
+      if (!qrMeta || qrMeta.status !== 'qr' || !qrMeta.qrUpdatedAt) {
+        el.hidden = true;
+        el.textContent = '';
+        el.classList.remove('expired', 'soon');
+        return;
+      }
+
+      el.hidden = false;
+      const secondsLeft = Math.max(0, Math.ceil((qrMeta.qrExpiresIn ?? 0) / 1000));
+      el.textContent = formatExpiry(secondsLeft);
+      el.classList.toggle('expired', !!qrMeta.qrExpired);
+      el.classList.toggle('soon', !qrMeta.qrExpired && secondsLeft > 0 && secondsLeft <= 10);
+
+      const qr = document.getElementById('qr');
+      qr.classList.toggle('expired', !!qrMeta.qrExpired);
+    }
+
+    function startQrExpiryTimer(qrMeta) {
+      clearQrExpiryTimer();
+      if (!qrMeta || qrMeta.status !== 'qr' || !qrMeta.qrUpdatedAt) return;
+
+      updateQrExpiryUi(qrMeta);
+      qrExpiryTimer = setInterval(() => {
+        const elapsed = Date.now() - qrMeta.qrUpdatedAt;
+        const expiresIn = Math.max(0, QR_EXPIRY_MS - elapsed);
+        const expired = expiresIn <= 0;
+        updateQrExpiryUi({
+          status: 'qr',
+          qrUpdatedAt: qrMeta.qrUpdatedAt,
+          qrExpiresIn: expiresIn,
+          qrExpired: expired
+        });
+        if (expired) tick();
+      }, 1000);
+    }
+
+    function updateStepsUi(status, progress) {
       const order = ['boot', 'qr', 'sync', 'ready'];
-      const activeIndex = {
+      let activeIndex = {
         starting: 0,
         loading: 0,
         qr: 1,
@@ -986,6 +1072,10 @@ function renderPage({ token }) {
         ready: 3,
         error: -1
       }[status] ?? -1;
+
+      if (status === 'loading' && typeof progress === 'number' && progress >= 100) {
+        activeIndex = 2;
+      }
 
       for (const el of document.querySelectorAll('.session-step')) {
         const idx = order.indexOf(el.dataset.step);
@@ -1018,7 +1108,12 @@ function renderPage({ token }) {
         labelText = message || 'Starting WhatsApp session…';
       } else if (status === 'loading') {
         percent = typeof progress === 'number' ? progress : 0;
-        labelText = message || 'Loading WhatsApp…';
+        if (percent >= 100) {
+          indeterminate = true;
+          labelText = message || 'QR scanned — syncing account…';
+        } else {
+          labelText = message || 'Loading WhatsApp…';
+        }
       } else if (status === 'qr') {
         bar.classList.remove('indeterminate');
         bar.style.width = '100%';
@@ -1044,59 +1139,101 @@ function renderPage({ token }) {
       label.textContent = labelText;
     }
 
-    function updateQrUi(status, message) {
+    function updateQrUi(status, message, qrMeta) {
       const statusChanged = status !== lastQrUiStatus;
       lastQrUiStatus = status;
       const section = document.getElementById('qr-section');
       const hint = document.getElementById('qr-hint');
       const instructions = document.getElementById('instructions');
       const logoutBtn = document.getElementById('logout-btn');
+      const connectedBadge = document.getElementById('qr-connected-badge');
       const showScanSteps = status === 'starting' || status === 'loading' || status === 'authenticated' || status === 'qr';
-      const booting = status === 'starting' || status === 'loading';
+      const booting = status === 'starting' || (status === 'loading' && (qrMeta?.progress ?? 0) < 100);
 
       section.classList.toggle('is-connected', status === 'ready');
+      connectedBadge.classList.toggle('visible', status === 'ready');
 
       if (status === 'qr') {
-        hint.textContent = message || 'Scan this QR code with your phone:';
+        hint.textContent = qrMeta?.qrExpired
+          ? 'QR expired — a fresh code will appear shortly.'
+          : (message || 'Scan this QR code with your phone:');
         setQrFrameVisible(true);
         logoutBtn.style.display = 'none';
-        if (statusChanged) loadQrImage();
-      } else if (booting) {
-        hint.textContent = message || 'Connecting… QR will appear here in a few seconds.';
-        setQrFrameVisible(true);
-        setQrSkeleton(true);
-        hideQrImage();
-        logoutBtn.style.display = 'none';
-      } else if (status === 'authenticated') {
-        hint.textContent = message || 'QR scanned! Finishing login…';
-        setQrFrameVisible(true);
-        setQrSkeleton(true);
-        hideQrImage();
-        logoutBtn.style.display = 'none';
-      } else if (status === 'ready') {
-        hint.textContent = message || 'Already logged in — use Log out below to scan again.';
-        setQrFrameVisible(false);
-        setQrSkeleton(false);
-        hideQrImage();
-        logoutBtn.style.display = 'inline-block';
-      } else if (status === 'error') {
-        hint.textContent = message || 'Login error. Try Log out to get a new QR.';
-        setQrFrameVisible(false);
-        setQrSkeleton(false);
-        hideQrImage();
-        logoutBtn.style.display = 'inline-block';
+        connectedBadge.classList.remove('visible');
+
+        const qrUpdatedAt = qrMeta?.qrUpdatedAt || null;
+        if (qrUpdatedAt && qrUpdatedAt !== lastQrUpdatedAt) {
+          lastQrUpdatedAt = qrUpdatedAt;
+          loadQrImage();
+        } else if (statusChanged && qrUpdatedAt) {
+          loadQrImage();
+        }
+
+        startQrExpiryTimer(qrMeta || { status: 'qr', qrUpdatedAt, qrExpiresIn: QR_EXPIRY_MS, qrExpired: false });
+      } else {
+        clearQrExpiryTimer();
+        document.getElementById('qr-expiry').hidden = true;
+        document.getElementById('qr').classList.remove('expired');
+
+        if (booting) {
+          hint.textContent = message || 'Connecting… QR will appear here in a few seconds.';
+          setQrFrameVisible(true);
+          setQrSkeleton(true);
+          hideQrImage();
+          logoutBtn.style.display = 'none';
+          connectedBadge.classList.remove('visible');
+        } else if (status === 'loading' && typeof qrMeta?.progress === 'number' && qrMeta.progress >= 100) {
+          hint.textContent = message || 'QR scanned! Syncing account…';
+          setQrFrameVisible(false);
+          setQrSkeleton(false);
+          hideQrImage();
+          logoutBtn.style.display = 'none';
+          connectedBadge.classList.remove('visible');
+        } else if (status === 'authenticated') {
+          hint.textContent = message || 'QR scanned! Finishing login…';
+          setQrFrameVisible(false);
+          setQrSkeleton(false);
+          hideQrImage();
+          logoutBtn.style.display = 'none';
+          connectedBadge.classList.remove('visible');
+        } else if (status === 'ready') {
+          hint.textContent = message || 'Connected — configure targets below.';
+          setQrFrameVisible(false);
+          setQrSkeleton(false);
+          hideQrImage();
+          logoutBtn.style.display = 'inline-block';
+        } else if (status === 'error') {
+          hint.textContent = message || 'Login error. Try Log out to get a new QR.';
+          setQrFrameVisible(false);
+          setQrSkeleton(false);
+          hideQrImage();
+          logoutBtn.style.display = 'inline-block';
+          connectedBadge.classList.remove('visible');
+        }
       }
 
       instructions.style.display = showScanSteps ? 'block' : 'none';
     }
 
+    function buildQrMeta(data) {
+      return {
+        status: data.status,
+        progress: data.progress,
+        qrUpdatedAt: data.qrUpdatedAt || null,
+        qrExpiresIn: data.qrExpiresIn ?? null,
+        qrExpired: !!data.qrExpired
+      };
+    }
+
     function updateSessionState(data) {
       const status = data.status || 'starting';
       const message = data.message || '';
+      const qrMeta = buildQrMeta(data);
       setStatus(message, status);
-      updateStepsUi(status);
+      updateStepsUi(status, data.progress);
       updateProgressUi(status, data.progress, message);
-      updateQrUi(status, message);
+      updateQrUi(status, message, qrMeta);
+      schedulePoll(status);
     }
 
     document.getElementById('logout-btn').addEventListener('click', async () => {
@@ -1105,6 +1242,8 @@ function renderPage({ token }) {
       whatsAppReady = false;
       clearTargetForm();
       lastQrUiStatus = null;
+      lastQrUpdatedAt = null;
+      clearQrExpiryTimer();
       updateSessionState({
         status: 'starting',
         message: 'Logging out from WhatsApp… this may take up to 25 seconds.',
@@ -1168,7 +1307,6 @@ function renderPage({ token }) {
       progress: 0
     });
     tick();
-    setInterval(() => tick(), POLL_MS);
   </script>
 </body>
 </html>`;
@@ -1188,12 +1326,36 @@ function createSetupServer({
   isWhatsAppReady
 }) {
   let currentQr = null;
+  let qrUpdatedAt = null;
   let status = 'starting';
   let statusMessage = 'Starting WhatsApp client...';
   let loadPercent = 0;
   let monitoring = null;
   let server = null;
   const logs = [];
+
+  function buildQrPollMeta() {
+    if (!currentQr || !qrUpdatedAt) {
+      return { qrUpdatedAt: null, qrExpiresIn: null, qrExpired: false };
+    }
+    const elapsed = Date.now() - qrUpdatedAt;
+    const qrExpiresIn = Math.max(0, QR_EXPIRY_MS - elapsed);
+    return {
+      qrUpdatedAt,
+      qrExpiresIn,
+      qrExpired: elapsed >= QR_EXPIRY_MS
+    };
+  }
+
+  function buildStatusPayload(extra = {}) {
+    return {
+      status,
+      message: statusMessage,
+      progress: loadPercent,
+      ...buildQrPollMeta(),
+      ...extra
+    };
+  }
 
   const app = express();
   app.use(express.json());
@@ -1236,6 +1398,7 @@ function createSetupServer({
   function clearSessionState(message) {
     monitoring = null;
     currentQr = null;
+    qrUpdatedAt = null;
     status = 'starting';
     statusMessage = message || 'Session cleared. Waiting for new QR code...';
     loadPercent = 0;
@@ -1266,9 +1429,7 @@ function createSetupServer({
 
   app.get('/setup/status', checkToken, (req, res) => {
     res.json({
-      status,
-      message: statusMessage,
-      progress: loadPercent,
+      ...buildStatusPayload(),
       monitoring,
       ready: isWhatsAppReady ? isWhatsAppReady() : status === 'ready'
     });
@@ -1379,9 +1540,7 @@ function createSetupServer({
     const since = Math.max(0, Number(req.query.since) || 0);
     const ready = isWhatsAppConnected();
     res.json({
-      status,
-      message: statusMessage,
-      progress: loadPercent,
+      ...buildStatusPayload(),
       ready,
       monitoring: ready ? monitoring : null,
       targets: buildTargetsResponse(),
@@ -1451,41 +1610,59 @@ function createSetupServer({
     },
     setStarting(message) {
       currentQr = null;
+      qrUpdatedAt = null;
       status = 'starting';
       statusMessage = message || 'Starting WhatsApp client...';
       loadPercent = 0;
     },
     setLoading(percent, message) {
-      currentQr = null;
-      status = 'loading';
+      if (status === 'authenticated' || status === 'ready') return;
       loadPercent = Math.max(0, Math.min(100, Number(percent) || 0));
       statusMessage = message || `Loading WhatsApp ${loadPercent}%…`;
+      if (loadPercent >= 100) {
+        currentQr = null;
+        qrUpdatedAt = null;
+        status = 'authenticated';
+        if (!statusMessage.includes('sync')) {
+          statusMessage = 'QR scanned — syncing account…';
+        }
+        return;
+      }
+      status = 'loading';
     },
     setQr(qr) {
-      currentQr = qr;
+      if (currentQr !== qr) {
+        currentQr = qr;
+        qrUpdatedAt = Date.now();
+      }
       status = 'qr';
       statusMessage = 'Scan this QR code with WhatsApp on your phone.';
       loadPercent = 100;
     },
-    setAuthenticated() {
+    setAuthenticated(message) {
       currentQr = null;
+      qrUpdatedAt = null;
       status = 'authenticated';
-      statusMessage = 'Authenticated. Finishing connection...';
+      statusMessage = message || 'Authenticated. Finishing connection...';
       loadPercent = 100;
     },
     setReady(message) {
       currentQr = null;
+      qrUpdatedAt = null;
       status = 'ready';
       statusMessage = message || 'Connected. Set targets below if needed.';
       loadPercent = null;
     },
     setWaitingTargets() {
+      currentQr = null;
+      qrUpdatedAt = null;
       status = 'ready';
       statusMessage = 'Connected. Enter group and member name below, then Save.';
       loadPercent = null;
     },
     setError(message) {
       currentQr = null;
+      qrUpdatedAt = null;
       status = 'error';
       statusMessage = message;
       loadPercent = null;

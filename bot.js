@@ -42,6 +42,9 @@ let targetsResolved = false;
 let isResettingSession = false;
 let applyTargetsInProgress = false;
 let authenticatedLogged = false;
+let hasAuthenticated = false;
+let lastQrPayload = null;
+let syncTimeout = null;
 let applyTargetsRef = null;
 let groupsCache = null;
 let groupsCacheAt = 0;
@@ -54,9 +57,31 @@ const PUPPETEER_TIMEOUT_MS = Number(process.env.PUPPETEER_TIMEOUT_MS) || 600000;
 const GROUPS_CACHE_MS = 5 * 60 * 1000;
 const LOGOUT_REMOTE_TIMEOUT_MS = 25000;
 const LOGOUT_DESTROY_TIMEOUT_MS = 5000;
+const SYNC_TIMEOUT_MS = Number(process.env.SYNC_TIMEOUT_MS) || 180000;
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function clearSyncTimeout() {
+  if (syncTimeout) {
+    clearTimeout(syncTimeout);
+    syncTimeout = null;
+  }
+}
+
+function startSyncTimeout() {
+  clearSyncTimeout();
+  syncTimeout = setTimeout(() => {
+    if (clientReady || isResettingSession) return;
+    log('Connection timed out after QR scan. Try logging out and scanning again.');
+    setupServer?.setError(
+      'Sync timed out after scanning. Click "Log out & show new QR" and scan again.'
+    );
+  }, SYNC_TIMEOUT_MS);
+}
+
+function resetAuthState() {
+  authenticatedLogged = false;
+  hasAuthenticated = false;
+  lastQrPayload = null;
+  clearSyncTimeout();
 }
 
 async function withRetry(fn, { attempts = 3, delayMs = 5000, label = 'operation' } = {}) {
@@ -264,7 +289,7 @@ setupServer = SETUP_TOKEN
         await Promise.race([destroyPromise, sleep(LOGOUT_DESTROY_TIMEOUT_MS)]);
 
         clearAuthSession();
-        authenticatedLogged = false;
+        resetAuthState();
 
         log('Session cleared. Generating new QR code...');
         setupServer?.setStarting('Starting fresh — QR coming soon…');
@@ -422,13 +447,26 @@ const client = new Client({
 
 client.on('loading_screen', (percent, message) => {
   log(`Loading WhatsApp: ${percent}% — ${message}`);
-  setupServer?.setLoading(percent, `Loading WhatsApp ${percent}% — ${message || 'WhatsApp'}`);
+  if (clientReady || hasAuthenticated) return;
+
+  const pct = Math.max(0, Math.min(100, Number(percent) || 0));
+  if (pct >= 100) {
+    hasAuthenticated = true;
+    setupServer?.setAuthenticated('QR scanned — syncing account…');
+    startSyncTimeout();
+    return;
+  }
+
+  setupServer?.setLoading(pct, `Syncing after scan ${pct}% — ${message || 'WhatsApp'}`);
 });
 
 client.on('qr', (qr) => {
   if (setupServer) {
     setupServer.setQr(qr);
-    log(`QR code ready — open: ${getSetupPageUrl()}`);
+    if (qr !== lastQrPayload) {
+      lastQrPayload = qr;
+      log(`QR code ready — open: ${getSetupPageUrl()}`);
+    }
   } else {
     log('Scan this QR code with WhatsApp on your phone:');
     qrcode.generate(qr, { small: true });
@@ -436,14 +474,17 @@ client.on('qr', (qr) => {
 });
 
 client.on('authenticated', () => {
+  hasAuthenticated = true;
   if (!authenticatedLogged) {
     log('Authenticated successfully. Session saved locally.');
     authenticatedLogged = true;
   }
-  setupServer?.setAuthenticated();
+  setupServer?.setAuthenticated('Authenticated — finishing connection…');
+  startSyncTimeout();
 });
 
 client.on('auth_failure', (msg) => {
+  resetAuthState();
   log('Authentication failed:', msg);
   setupServer?.setError(`Authentication failed: ${msg}`);
 });
@@ -519,6 +560,7 @@ applyTargetsRef = applyTargets;
 client.on('ready', async () => {
   if (isResettingSession) return;
 
+  clearSyncTimeout();
   log('WhatsApp client is ready.');
   clientReady = true;
 
@@ -546,7 +588,10 @@ client.on('disconnected', (reason) => {
   targetsResolved = false;
   activeGroupId = null;
   activeMembers = [];
-  setupServer?.clearSessionState('Disconnected. Scan QR to reconnect.');
+  resetAuthState();
+  setupServer?.clearSessionState(
+    reason === 'LOGOUT' ? 'Logged out. Waiting for new QR code…' : 'Disconnected. Scan QR to reconnect.'
+  );
 });
 
 client.on('message', async (message) => {
