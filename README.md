@@ -71,6 +71,42 @@ pm2 save
 pm2 startup   # follow the printed command to enable on boot
 ```
 
+### 6. DigitalOcean / VPS (remote QR scan)
+
+On a remote server there is no local terminal to scan from. Two options:
+
+**Option A — Web setup page (recommended on VPS)**
+
+1. In `.env`, set a secret token and port:
+
+   ```bash
+   SETUP_TOKEN=$(openssl rand -hex 32)
+   SETUP_PORT=3099
+   ```
+
+2. Open the port in your firewall (DigitalOcean → Networking → Firewalls, or `ufw allow 3099`).
+
+3. Start the bot and open in your phone browser:
+
+   ```
+   http://YOUR_DROPLET_IP:3099/setup?token=YOUR_SETUP_TOKEN
+   ```
+
+4. Scan the QR (WhatsApp → Settings → Linked devices → Link a device).
+
+5. After connection, the setup page closes automatically. Session is saved in `.wwebjs_auth/` for future restarts.
+
+**Option B — Scan locally, copy session**
+
+1. Run and scan QR on your Mac.
+2. Copy the session folder to the server:
+
+   ```bash
+   scp -r .wwebjs_auth/ user@YOUR_DROPLET_IP:/path/to/whatsapp-sheets-logger/
+   ```
+
+If `SETUP_TOKEN` is not set, the bot falls back to printing the QR in the terminal (SSH + `pm2 logs`).
+
 ## Environment variables
 
 | Variable | Description |
@@ -79,6 +115,8 @@ pm2 startup   # follow the printed command to enable on boot
 | `TARGET_USER_ID` | Sender to track (`xxxxx@c.us`) |
 | `WEBHOOK_URL` | Google Apps Script web app URL |
 | `DISCOVERY_MODE` | `true` to print IDs without filtering |
+| `SETUP_TOKEN` | Secret token for `/setup` web page (enables remote QR scan) |
+| `SETUP_PORT` | Port for setup page (default `3099`; avoid `3000` — often used by other dev apps) |
 
 ## How it works
 

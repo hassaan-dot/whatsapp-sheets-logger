@@ -5,17 +5,40 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const axios = require('axios');
 const { MessageDedup } = require('./dedup');
+const { createSetupServer } = require('./setup-server');
 
 const TARGET_GROUP_ID = process.env.TARGET_GROUP_ID;
 const TARGET_USER_ID = process.env.TARGET_USER_ID;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const DISCOVERY_MODE = process.env.DISCOVERY_MODE === 'true';
+const SETUP_TOKEN = process.env.SETUP_TOKEN;
+const SETUP_PORT = Number(process.env.SETUP_PORT) || 3099;
 
 const seenMessages = new MessageDedup();
 
+let setupServer = null;
+
 function log(...args) {
-  console.log(`[${new Date().toISOString()}]`, ...args);
+  const ts = new Date().toISOString();
+  const text = args
+    .map((arg) => {
+      if (typeof arg === 'string') return arg;
+      if (arg instanceof Error) return arg.message;
+      try {
+        return JSON.stringify(arg);
+      } catch {
+        return String(arg);
+      }
+    })
+    .join(' ');
+  const line = `[${ts}] ${text}`;
+  console.log(`[${ts}]`, ...args);
+  setupServer?.appendLog(line);
 }
+
+setupServer = SETUP_TOKEN
+  ? createSetupServer({ port: SETUP_PORT, token: SETUP_TOKEN })
+  : null;
 
 function getChromePath() {
   const candidates = [
@@ -105,20 +128,28 @@ const client = new Client({
 });
 
 client.on('qr', (qr) => {
-  log('Scan this QR code with WhatsApp on your phone:');
-  qrcode.generate(qr, { small: true });
+  if (setupServer) {
+    setupServer.setQr(qr);
+    log('QR code ready — open the setup page in your browser (see log above).');
+  } else {
+    log('Scan this QR code with WhatsApp on your phone:');
+    qrcode.generate(qr, { small: true });
+  }
 });
 
 client.on('authenticated', () => {
   log('Authenticated successfully. Session saved locally.');
+  setupServer?.setAuthenticated();
 });
 
 client.on('auth_failure', (msg) => {
   log('Authentication failed:', msg);
+  setupServer?.setError(`Authentication failed: ${msg}`);
 });
 
 client.on('ready', () => {
   log('WhatsApp client is ready.');
+  setupServer?.setReady();
   if (DISCOVERY_MODE) {
     log('DISCOVERY MODE: Listening for messages to print group/user IDs...');
     log('Send a message in your target group, then copy the IDs from the console.');
@@ -184,18 +215,32 @@ client.on('message', async (message) => {
 
 validateConfig();
 
-log('Starting WhatsApp Sheets Logger...');
-client.initialize();
+async function main() {
+  if (setupServer) {
+    await setupServer.start();
+  }
+
+  log('Starting WhatsApp Sheets Logger...');
+  await client.initialize();
+}
+
+main().catch((err) => {
+  log('Failed to start:', err.message);
+  process.exit(1);
+});
+
+async function shutdown() {
+  seenMessages.flush();
+  setupServer?.close();
+  await client.destroy();
+  process.exit(0);
+}
 
 process.on('SIGINT', async () => {
   log('Shutting down...');
-  seenMessages.flush();
-  await client.destroy();
-  process.exit(0);
+  await shutdown();
 });
 
 process.on('SIGTERM', async () => {
-  seenMessages.flush();
-  await client.destroy();
-  process.exit(0);
+  await shutdown();
 });
