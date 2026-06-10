@@ -2,6 +2,27 @@ function normalizeName(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+function namesMatch(actual, expected) {
+  const a = normalizeName(actual);
+  const e = normalizeName(expected);
+  if (!a || !e) return false;
+  return a === e || a.includes(e) || e.includes(a);
+}
+
+function senderIdsMatch(senderId, targetId) {
+  if (!senderId || !targetId) return false;
+  if (senderId === targetId) return true;
+  const senderUser = senderId.split('@')[0];
+  const targetUser = targetId.split('@')[0];
+  return Boolean(senderUser && targetUser && senderUser === targetUser);
+}
+
+function isTargetMember(senderId, displayName, { memberId, memberName }) {
+  if (memberId && senderIdsMatch(senderId, memberId)) return true;
+  if (memberName && namesMatch(displayName, memberName)) return true;
+  return false;
+}
+
 function contactDisplayName(contact) {
   return contact?.pushname || contact?.name || contact?.number || '';
 }
@@ -106,6 +127,9 @@ async function resolveTargets(client, { groupId, userId, groupName, memberName }
 
 module.exports = {
   normalizeName,
+  namesMatch,
+  senderIdsMatch,
+  isTargetMember,
   contactDisplayName,
   resolveTargets,
   findMemberInGroup

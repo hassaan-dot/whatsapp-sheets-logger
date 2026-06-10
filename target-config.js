@@ -11,6 +11,8 @@ function loadTargetConfig() {
     return {
       groupName: data.groupName.trim(),
       memberName: data.memberName.trim(),
+      groupId: data.groupId?.trim() || null,
+      memberId: data.memberId?.trim() || null,
       updatedAt: data.updatedAt || null
     };
   } catch {
@@ -18,10 +20,12 @@ function loadTargetConfig() {
   }
 }
 
-function saveTargetConfig({ groupName, memberName }) {
+function saveTargetConfig({ groupName, memberName, groupId, memberId }) {
   const data = {
     groupName: groupName.trim(),
     memberName: memberName.trim(),
+    groupId: groupId?.trim() || null,
+    memberId: memberId?.trim() || null,
     updatedAt: new Date().toISOString()
   };
   fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(data, null, 2)}\n`);
@@ -42,6 +46,8 @@ function getEffectiveTargets({ groupName, memberName, groupId, userId }) {
     return {
       groupName: saved.groupName,
       memberName: saved.memberName,
+      groupId: saved.groupId,
+      memberId: saved.memberId,
       source: 'saved'
     };
   }
@@ -72,7 +78,8 @@ function getTargetInput(env) {
     return {
       groupName: targets.groupName,
       memberName: targets.memberName,
-      groupId: env.groupId?.trim() || '',
+      groupId: targets.groupId || env.groupId?.trim() || '',
+      memberId: targets.memberId || env.userId?.trim() || '',
       userId: env.userId?.trim() || ''
     };
   }

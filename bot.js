@@ -6,7 +6,8 @@ const qrcode = require('qrcode-terminal');
 const axios = require('axios');
 const { MessageDedup } = require('./dedup');
 const { createSetupServer } = require('./setup-server');
-const { normalizeName, resolveTargets } = require('./resolve-targets');
+const { isTargetMember, resolveTargets } = require('./resolve-targets');
+const { listGroups, listGroupMembers } = require('./whatsapp-catalog');
 const {
   saveTargetConfig,
   getEffectiveTargets,
@@ -42,8 +43,14 @@ let isResettingSession = false;
 let applyTargetsInProgress = false;
 let authenticatedLogged = false;
 let applyTargetsRef = null;
+let groupsCache = null;
+let groupsCacheAt = 0;
+let groupsLoadPromise = null;
+const membersLoadPromises = new Map();
+const membersCache = new Map();
 
 const PUPPETEER_TIMEOUT_MS = Number(process.env.PUPPETEER_TIMEOUT_MS) || 600000;
+const GROUPS_CACHE_MS = 5 * 60 * 1000;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -108,9 +115,70 @@ setupServer = SETUP_TOKEN
       token: SETUP_TOKEN,
       serverIp: SERVER_IP,
       getTargets: () => getEffectiveTargets(envTargets()),
-      onSaveTargets: async (groupName, memberName) => {
-        saveTargetConfig({ groupName, memberName });
-        log(`Targets saved from setup page: group="${groupName}", member="${memberName}"`);
+      isWhatsAppReady: () => clientReady,
+      onListGroups: async () => {
+        if (!clientReady) return { ready: false, groups: [] };
+
+        const now = Date.now();
+        if (groupsCache && now - groupsCacheAt < GROUPS_CACHE_MS) {
+          return { ready: true, groups: groupsCache };
+        }
+
+        if (groupsLoadPromise) {
+          log('Group list already loading — please wait...');
+          return groupsLoadPromise;
+        }
+
+        groupsLoadPromise = (async () => {
+          try {
+            log('Loading WhatsApp groups (fast scan)...');
+            const groups = await withRetry(() => listGroups(client), {
+              label: 'Load groups',
+              attempts: 2,
+              delayMs: 5000
+            });
+            groupsCache = groups;
+            groupsCacheAt = Date.now();
+            log(`Loaded ${groups.length} group(s).`);
+            return { ready: true, groups };
+          } finally {
+            groupsLoadPromise = null;
+          }
+        })();
+
+        return groupsLoadPromise;
+      },
+      onListMembers: async (groupId) => {
+        if (!clientReady) throw new Error('WhatsApp is not connected yet.');
+
+        const cached = membersCache.get(groupId);
+        if (cached && Date.now() - cached.at < GROUPS_CACHE_MS) {
+          return cached.members;
+        }
+
+        if (membersLoadPromises.has(groupId)) {
+          log('Member list already loading — please wait...');
+          return membersLoadPromises.get(groupId);
+        }
+
+        const loadPromise = (async () => {
+          try {
+            log('Loading members (fast scan)...');
+            const members = await listGroupMembers(client, groupId);
+            membersCache.set(groupId, { members, at: Date.now() });
+            log(`Loaded ${members.length} member(s).`);
+            return members;
+          } finally {
+            membersLoadPromises.delete(groupId);
+          }
+        })();
+
+        membersLoadPromises.set(groupId, loadPromise);
+        return loadPromise;
+      },
+      onSaveTargets: async (groupName, memberName, groupId, memberId) => {
+        saveTargetConfig({ groupName, memberName, groupId, memberId });
+        log(`Targets saved: group="${groupName}", member="${memberName}"${memberId ? `, id=${memberId}` : ''}`);
 
         let warning = null;
         if (hasNameTargets()) {
@@ -122,6 +190,7 @@ setupServer = SETUP_TOKEN
         if (clientReady && applyTargetsRef) {
           targetsResolved = false;
           const result = await applyTargetsRef();
+          targetsResolved = true;
           return { ...result, warning };
         }
 
@@ -151,6 +220,11 @@ setupServer = SETUP_TOKEN
         clearAuthSession();
         authenticatedLogged = false;
         targetsResolved = false;
+        groupsCache = null;
+        groupsCacheAt = 0;
+        groupsLoadPromise = null;
+        membersLoadPromises.clear();
+        membersCache.clear();
 
         log('Session cleared. Generating new QR code...');
         isResettingSession = false;
@@ -307,16 +381,21 @@ async function applyTargets() {
       return { monitoring: null };
     }
 
-    log('Applying targets (waiting for WhatsApp to finish syncing)...');
-    await sleep(8000);
+    const hasSavedIds = Boolean(input.groupId && input.memberId);
+    if (!hasSavedIds) {
+      log('Applying targets (waiting for WhatsApp to finish syncing)...');
+      await sleep(5000);
+    } else {
+      log('Applying targets...');
+    }
 
     const resolved = await withRetry(() => resolveTargets(client, input), {
       label: 'Resolve targets'
     });
 
     activeGroupId = resolved.groupId;
-    activeUserId = resolved.userId;
-    filterByMemberName = resolved.filterByMemberName;
+    activeUserId = input.memberId || resolved.userId || null;
+    filterByMemberName = Boolean(input.memberName);
     activeMemberName = input.memberName || '';
 
     log(`Monitoring group:  ${resolved.groupLabel}`);
@@ -384,13 +463,17 @@ client.on('message', async (message) => {
     // 1. Group filter (no getChat — faster, fewer timeouts)
     if (message.from !== activeGroupId) return;
 
-    // 2. Member filter (by display name or WhatsApp ID)
+    // 2. Member filter (by WhatsApp ID and/or display name)
     const senderId = message.author || message.from;
+    const displayName = message._data?.notifyName || message._data?.notify_name || '';
 
-    if (filterByMemberName) {
-      const displayName = message._data?.notifyName || '';
-      if (normalizeName(displayName) !== normalizeName(activeMemberName)) return;
-    } else if (senderId !== activeUserId) {
+    if (
+      !isTargetMember(senderId, displayName, {
+        memberId: activeUserId,
+        memberName: activeMemberName
+      })
+    ) {
+      log(`Skipped in ${activeGroupId}: "${displayName || 'Unknown'}" (${senderId})`);
       return;
     }
 
@@ -400,7 +483,12 @@ client.on('message', async (message) => {
     seenMessages.add(msgId);
 
     // 4. Build payload
-    const contact = await message.getContact();
+    let contact = null;
+    try {
+      contact = await message.getContact();
+    } catch {
+      log('Contact lookup skipped (using message name instead).');
+    }
     const payload = buildPayload(message, contact);
 
     // 5. Send to Google Sheets
