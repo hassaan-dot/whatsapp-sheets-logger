@@ -4,4 +4,5 @@ node_modules
 .wwebjs_cache
 logs
 seen-messages.json
+targets.json
 .DS_Store

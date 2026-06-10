@@ -55,6 +55,19 @@ User ID:    923xxxxxxxx@c.us
 
 Copy these into `.env`, set `DISCOVERY_MODE=false`, and add your `WEBHOOK_URL`.
 
+**Or use names instead of IDs** — set the exact WhatsApp group title and member display name:
+
+```bash
+TARGET_GROUP_NAME=My Family Group
+TARGET_MEMBER_NAME=Ahmed
+```
+
+Names must match exactly (case-insensitive). On startup the bot lists group members if the name is not found.
+
+**Or use the setup web page** (when `SETUP_TOKEN` is set): open `/setup?token=...`, enter group and member name, click **Save & apply**.
+
+**Priority:** `.env` names → saved `targets.json` → `.env` IDs. If both `.env` and a saved file exist, `.env` wins — restart the bot after editing `.env`.
+
 ### 4. Run
 
 ```bash
@@ -111,8 +124,10 @@ If `SETUP_TOKEN` is not set, the bot falls back to printing the QR in the termin
 
 | Variable | Description |
 |----------|-------------|
-| `TARGET_GROUP_ID` | WhatsApp group ID (`xxxxx@g.us`) |
-| `TARGET_USER_ID` | Sender to track (`xxxxx@c.us`) |
+| `TARGET_GROUP_NAME` | Exact WhatsApp group title (use with `TARGET_MEMBER_NAME`) |
+| `TARGET_MEMBER_NAME` | Exact member display name as shown in WhatsApp |
+| `TARGET_GROUP_ID` | Alternative: group ID (`xxxxx@g.us`) |
+| `TARGET_USER_ID` | Alternative: sender ID (`xxxxx@c.us` or `@lid`) |
 | `WEBHOOK_URL` | Google Apps Script web app URL |
 | `DISCOVERY_MODE` | `true` to print IDs without filtering |
 | `SETUP_TOKEN` | Secret token for `/setup` web page (enables remote QR scan) |

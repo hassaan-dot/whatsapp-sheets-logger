@@ -6,9 +6,18 @@ const qrcode = require('qrcode-terminal');
 const axios = require('axios');
 const { MessageDedup } = require('./dedup');
 const { createSetupServer } = require('./setup-server');
+const { normalizeName, resolveTargets } = require('./resolve-targets');
+const {
+  saveTargetConfig,
+  getEffectiveTargets,
+  getTargetInput,
+  hasConfiguredTargets
+} = require('./target-config');
 
 const TARGET_GROUP_ID = process.env.TARGET_GROUP_ID;
 const TARGET_USER_ID = process.env.TARGET_USER_ID;
+const TARGET_GROUP_NAME = process.env.TARGET_GROUP_NAME;
+const TARGET_MEMBER_NAME = process.env.TARGET_MEMBER_NAME;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const DISCOVERY_MODE = process.env.DISCOVERY_MODE === 'true';
 const SETUP_TOKEN = process.env.SETUP_TOKEN;
@@ -17,6 +26,37 @@ const SETUP_PORT = Number(process.env.SETUP_PORT) || 3099;
 const seenMessages = new MessageDedup();
 
 let setupServer = null;
+let activeGroupId = null;
+let activeUserId = null;
+let filterByMemberName = false;
+let activeMemberName = '';
+let clientReady = false;
+let targetsResolved = false;
+let isResettingSession = false;
+let applyTargetsInProgress = false;
+let authenticatedLogged = false;
+let applyTargetsRef = null;
+
+const PUPPETEER_TIMEOUT_MS = Number(process.env.PUPPETEER_TIMEOUT_MS) || 600000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withRetry(fn, { attempts = 3, delayMs = 5000, label = 'operation' } = {}) {
+  let lastError;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (!isRecoverableInitError(err) || i === attempts) throw err;
+      log(`${label} failed (attempt ${i}/${attempts}): ${err.message}. Retrying...`);
+      await sleep(delayMs);
+    }
+  }
+  throw lastError;
+}
 
 function log(...args) {
   const ts = new Date().toISOString();
@@ -36,8 +76,80 @@ function log(...args) {
   setupServer?.appendLog(line);
 }
 
+const envTargets = () => ({
+  groupName: TARGET_GROUP_NAME,
+  memberName: TARGET_MEMBER_NAME,
+  groupId: TARGET_GROUP_ID,
+  userId: TARGET_USER_ID
+});
+
+function hasNameTargets() {
+  return Boolean(TARGET_GROUP_NAME?.trim() && TARGET_MEMBER_NAME?.trim());
+}
+
+function hasIdTargets() {
+  return Boolean(
+    TARGET_GROUP_ID?.trim() &&
+      !TARGET_GROUP_ID.includes('xxxxx') &&
+      TARGET_USER_ID?.trim() &&
+      !TARGET_USER_ID.includes('xxxxx')
+  );
+}
+
 setupServer = SETUP_TOKEN
-  ? createSetupServer({ port: SETUP_PORT, token: SETUP_TOKEN })
+  ? createSetupServer({
+      port: SETUP_PORT,
+      token: SETUP_TOKEN,
+      getTargets: () => getEffectiveTargets(envTargets()),
+      onSaveTargets: async (groupName, memberName) => {
+        saveTargetConfig({ groupName, memberName });
+        log(`Targets saved from setup page: group="${groupName}", member="${memberName}"`);
+
+        let warning = null;
+        if (hasNameTargets()) {
+          warning =
+            'Saved, but .env names take priority. Update TARGET_GROUP_NAME / TARGET_MEMBER_NAME in .env and restart.';
+          log(`Note: ${warning}`);
+        }
+
+        if (clientReady && applyTargetsRef) {
+          targetsResolved = false;
+          const result = await applyTargetsRef();
+          return { ...result, warning };
+        }
+
+        log('Targets will apply when WhatsApp is connected.');
+        return { monitoring: null, warning };
+      },
+      onLogout: async () => {
+        if (isResettingSession) return;
+        isResettingSession = true;
+        targetsResolved = false;
+        clientReady = false;
+        activeGroupId = null;
+        setupServer?.setStarting('Clearing session…');
+
+        try {
+          await client.logout();
+        } catch (err) {
+          log('Logout note:', err.message);
+        }
+
+        try {
+          await client.destroy();
+        } catch (err) {
+          log('Destroy note:', err.message);
+        }
+
+        clearAuthSession();
+        authenticatedLogged = false;
+        targetsResolved = false;
+
+        log('Session cleared. Generating new QR code...');
+        isResettingSession = false;
+        await initializeClient();
+      }
+    })
   : null;
 
 function getChromePath() {
@@ -55,12 +167,9 @@ function getChromePath() {
 
 function validateConfig() {
   if (!DISCOVERY_MODE) {
-    if (!TARGET_GROUP_ID || TARGET_GROUP_ID.includes('xxxxx')) {
-      log('ERROR: Set TARGET_GROUP_ID in .env (or run with DISCOVERY_MODE=true first)');
-      process.exit(1);
-    }
-    if (!TARGET_USER_ID || TARGET_USER_ID.includes('xxxxx')) {
-      log('ERROR: Set TARGET_USER_ID in .env (or run with DISCOVERY_MODE=true first)');
+    if (!hasConfiguredTargets(envTargets()) && !SETUP_TOKEN) {
+      log('ERROR: Set TARGET_GROUP_NAME + TARGET_MEMBER_NAME, or TARGET_GROUP_ID + TARGET_USER_ID in .env');
+      log('       (or set SETUP_TOKEN and configure targets on the setup page)');
       process.exit(1);
     }
     if (!WEBHOOK_URL || WEBHOOK_URL.includes('xxxxx')) {
@@ -109,11 +218,30 @@ if (chromePath) {
   log(`Using Chrome at: ${chromePath}`);
 }
 
+function clearAuthSession() {
+  for (const dir of ['.wwebjs_auth', '.wwebjs_cache']) {
+    if (fs.existsSync(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+}
+
+function isRecoverableInitError(err) {
+  const msg = String(err?.message || err);
+  return (
+    msg.includes('timed out') ||
+    msg.includes('Timeout') ||
+    msg.includes('Execution context was destroyed') ||
+    msg.includes('Protocol error')
+  );
+}
+
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: '.wwebjs_auth' }),
   puppeteer: {
     headless: true,
-    timeout: 90000,
+    timeout: PUPPETEER_TIMEOUT_MS,
+    protocolTimeout: PUPPETEER_TIMEOUT_MS,
     ...(chromePath ? { executablePath: chromePath } : {}),
     args: [
       '--no-sandbox',
@@ -121,10 +249,16 @@ const client = new Client({
       '--disable-dev-shm-usage',
       '--disable-accelerated-2d-canvas',
       '--no-first-run',
+      '--disable-extensions',
       ...(process.platform === 'linux' ? ['--no-zygote'] : []),
       '--disable-gpu'
     ]
   }
+});
+
+client.on('loading_screen', (percent, message) => {
+  log(`Loading WhatsApp: ${percent}% — ${message}`);
+  setupServer?.setStarting(`Loading WhatsApp ${percent}%…`);
 });
 
 client.on('qr', (qr) => {
@@ -138,7 +272,10 @@ client.on('qr', (qr) => {
 });
 
 client.on('authenticated', () => {
-  log('Authenticated successfully. Session saved locally.');
+  if (!authenticatedLogged) {
+    log('Authenticated successfully. Session saved locally.');
+    authenticatedLogged = true;
+  }
   setupServer?.setAuthenticated();
 });
 
@@ -147,16 +284,73 @@ client.on('auth_failure', (msg) => {
   setupServer?.setError(`Authentication failed: ${msg}`);
 });
 
-client.on('ready', () => {
+async function applyTargets() {
+  if (DISCOVERY_MODE) return { monitoring: null };
+  if (applyTargetsInProgress) return { monitoring: null };
+
+  applyTargetsInProgress = true;
+  try {
+    const input = getTargetInput(envTargets());
+    const hasNames = Boolean(input?.groupName && input?.memberName);
+
+    if (!input || (!hasNames && !input.groupId)) {
+      activeGroupId = null;
+      log('No targets configured. Set group and member on the setup page.');
+      setupServer?.setWaitingTargets();
+      return { monitoring: null };
+    }
+
+    log('Applying targets (waiting for WhatsApp to finish syncing)...');
+    await sleep(8000);
+
+    const resolved = await withRetry(() => resolveTargets(client, input), {
+      label: 'Resolve targets'
+    });
+
+    activeGroupId = resolved.groupId;
+    activeUserId = resolved.userId;
+    filterByMemberName = resolved.filterByMemberName;
+    activeMemberName = input.memberName || '';
+
+    log(`Monitoring group:  ${resolved.groupLabel}`);
+    log(`Filtering member: ${resolved.memberLabel}`);
+    log(`Webhook:          ${WEBHOOK_URL}`);
+
+    const monitoring = {
+      group: resolved.groupLabel,
+      member: resolved.memberLabel
+    };
+    setupServer?.setMonitoring(monitoring);
+    setupServer?.setReady(`Connected. Monitoring ${resolved.memberLabel}.`);
+    return { monitoring };
+  } finally {
+    applyTargetsInProgress = false;
+  }
+}
+
+applyTargetsRef = applyTargets;
+
+client.on('ready', async () => {
+  if (isResettingSession) return;
+
   log('WhatsApp client is ready.');
-  setupServer?.setReady();
+  clientReady = true;
+
   if (DISCOVERY_MODE) {
     log('DISCOVERY MODE: Listening for messages to print group/user IDs...');
     log('Send a message in your target group, then copy the IDs from the console.');
-  } else {
-    log(`Monitoring group: ${TARGET_GROUP_ID}`);
-    log(`Filtering user:  ${TARGET_USER_ID}`);
-    log(`Webhook:         ${WEBHOOK_URL}`);
+    setupServer?.setReady('Discovery mode — send a message in a group to see IDs.');
+    return;
+  }
+
+  if (targetsResolved) return;
+
+  try {
+    await applyTargets();
+    targetsResolved = true;
+  } catch (err) {
+    log('ERROR resolving targets:', err.message);
+    setupServer?.setReady(`Connected, but target setup failed: ${err.message}. Fix names and click Save.`);
   }
 });
 
@@ -166,28 +360,32 @@ client.on('disconnected', (reason) => {
 
 client.on('message', async (message) => {
   try {
-    const chat = await message.getChat();
-
     if (DISCOVERY_MODE) {
-      if (chat.isGroup) {
+      if (message.from?.endsWith('@g.us')) {
         const senderId = message.author || message.from;
-        const contact = await message.getContact();
         log('--- DISCOVERY ---');
-        log(`Group Name: ${chat.name}`);
-        log(`Group ID:   ${chat.id._serialized}`);
-        log(`Sender:     ${contact.pushname || contact.name || 'Unknown'}`);
+        log(`Group ID:   ${message.from}`);
+        log(`Sender:     ${message._data?.notifyName || 'Unknown'}`);
         log(`User ID:    ${senderId}`);
         log('-----------------');
       }
       return;
     }
 
-    // 1. Group filter
-    if (chat.id._serialized !== TARGET_GROUP_ID) return;
+    if (!activeGroupId) return;
 
-    // 2. User filter (in groups, author is the actual sender)
+    // 1. Group filter (no getChat — faster, fewer timeouts)
+    if (message.from !== activeGroupId) return;
+
+    // 2. Member filter (by display name or WhatsApp ID)
     const senderId = message.author || message.from;
-    if (senderId !== TARGET_USER_ID) return;
+
+    if (filterByMemberName) {
+      const displayName = message._data?.notifyName || '';
+      if (normalizeName(displayName) !== normalizeName(activeMemberName)) return;
+    } else if (senderId !== activeUserId) {
+      return;
+    }
 
     // 3. Deduplication
     const msgId = message.id.id;
@@ -215,18 +413,40 @@ client.on('message', async (message) => {
 
 validateConfig();
 
+async function initializeClient() {
+  try {
+    await client.initialize();
+  } catch (err) {
+    if (!isRecoverableInitError(err)) throw err;
+
+    log('WhatsApp startup failed — clearing saved session and retrying...');
+    log(`Reason: ${err.message}`);
+    setupServer?.setStarting('Clearing old session… QR will appear shortly.');
+
+    try {
+      await client.destroy();
+    } catch (_) {}
+
+    clearAuthSession();
+    await client.initialize();
+  }
+}
+
 async function main() {
   if (setupServer) {
     await setupServer.start();
   }
 
   log('Starting WhatsApp Sheets Logger...');
-  await client.initialize();
+  setupServer?.setStarting('Starting WhatsApp client…');
+  await initializeClient();
 }
 
 main().catch((err) => {
   log('Failed to start:', err.message);
-  process.exit(1);
+  setupServer?.setError(
+    `Failed to start: ${err.message}. Click "Log out & show new QR" or run: rm -rf .wwebjs_auth .wwebjs_cache`
+  );
 });
 
 async function shutdown() {
