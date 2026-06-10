@@ -1,5 +1,6 @@
 const express = require('express');
 const QRCode = require('qrcode');
+const { normalizeMembers, memberLabels } = require('./target-config');
 
 const MAX_LOG_LINES = 500;
 
@@ -114,6 +115,80 @@ function renderPage({ token }) {
       margin-bottom: 0.5rem;
       font-size: 0.85rem;
     }
+    .btn-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 0.5rem;
+    }
+    .btn-row .btn-secondary { margin-bottom: 0; }
+    .panel.session-off {
+      opacity: 0.55;
+      pointer-events: none;
+    }
+    .panel.session-off .session-hint {
+      display: block;
+      color: #888;
+      font-size: 0.85rem;
+      margin: 0 0 0.75rem;
+    }
+    .session-hint { display: none; }
+    .pick-row {
+      display: none;
+      align-items: center;
+      gap: 0.35rem;
+      margin: 0.35rem 0 0.5rem;
+    }
+    .pick-row.visible { display: flex; }
+    .pick-row .selected-pill { margin: 0; flex: 1; min-width: 0; }
+    .btn-clear {
+      flex-shrink: 0;
+      width: 1.6rem;
+      height: 1.6rem;
+      padding: 0;
+      background: #fff;
+      color: #c00;
+      border: 1px solid #e0a0a0;
+      border-radius: 50%;
+      font-size: 1rem;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .member-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      margin: 0.5rem 0 0.25rem;
+      min-height: 0;
+    }
+    .member-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      background: #e8f5f3;
+      color: #128c7e;
+      border: 1px solid #b8e0db;
+      border-radius: 999px;
+      padding: 0.2rem 0.2rem 0.2rem 0.65rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+      max-width: 100%;
+    }
+    .member-chip-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .member-chip .btn-clear {
+      width: 1.35rem;
+      height: 1.35rem;
+      font-size: 0.9rem;
+    }
+    .member-hint {
+      font-size: 0.8rem;
+      color: #666;
+      margin: 0.25rem 0 0;
+    }
     .logs-title { text-align: left; font-size: 0.9rem; font-weight: 600; margin: 1.5rem 0 0.5rem; }
     #logs {
       text-align: left;
@@ -147,34 +222,41 @@ function renderPage({ token }) {
     <button type="button" id="logout-btn" style="display:none">Log out &amp; show new QR</button>
   </section>
 
-  <section class="panel">
+  <section class="panel session-off" id="target-panel">
     <h2>Target messages</h2>
+    <p class="session-hint" id="target-session-hint">Log in with WhatsApp above to configure targets.</p>
     <p id="target-source"></p>
     <p style="font-size:0.85rem;color:#555;margin:0 0 0.75rem;">
-      Select a group and member after WhatsApp is connected. Or type names manually.
+      Select a group, then add one or more members to monitor. Or type names manually.
     </p>
     <form id="target-form">
       <div class="field">
         <label>Group</label>
-        <button type="button" class="btn-secondary" id="load-groups">Load my groups</button>
+        <div class="btn-row">
+          <button type="button" class="btn-secondary" id="load-groups">Load my groups</button>
+          <button type="button" class="btn-secondary" id="sync-groups">Sync from phone</button>
+        </div>
         <div class="combo-wrap">
           <input id="group-search" placeholder="Search groups…" autocomplete="off" />
           <div id="group-list" class="combo-list" hidden></div>
         </div>
-        <p id="group-selected" class="selected-pill"></p>
+        <div class="pick-row" id="group-pick-row">
+          <p id="group-selected" class="selected-pill"></p>
+          <button type="button" class="btn-clear" id="clear-group" title="Remove group" aria-label="Remove group">×</button>
+        </div>
         <input type="hidden" id="groupId" />
         <input type="hidden" id="groupName" />
       </div>
       <div class="field">
-        <label>Member</label>
+        <label>Members</label>
         <button type="button" class="btn-secondary" id="load-members" disabled>Load members</button>
         <div class="combo-wrap">
           <input id="member-search" placeholder="Search members…" autocomplete="off" disabled />
           <div id="member-list" class="combo-list" hidden></div>
         </div>
-        <p id="member-selected" class="selected-pill"></p>
-        <input type="hidden" id="memberName" />
-        <input type="hidden" id="memberId" />
+        <p class="member-hint">Click a name to add it. You can select more than one.</p>
+        <div id="member-chips" class="member-chips"></div>
+        <button type="button" class="btn-secondary" id="clear-member" style="margin-top:0.35rem;font-size:0.8rem;">Clear all members</button>
       </div>
       <button type="submit" id="save-targets">Save &amp; apply</button>
       <p id="target-feedback"></p>
@@ -202,34 +284,150 @@ function renderPage({ token }) {
 
     let allGroups = [];
     let allMembers = [];
+    let selectedMembers = [];
     let whatsAppReady = false;
+
+    function memberKey(item) {
+      return String(item.id || item.name || '').trim().toLowerCase();
+    }
+
+    function renderMemberChips() {
+      const el = document.getElementById('member-chips');
+      el.innerHTML = '';
+      for (const member of selectedMembers) {
+        const chip = document.createElement('span');
+        chip.className = 'member-chip';
+
+        const label = document.createElement('span');
+        label.className = 'member-chip-label';
+        label.textContent = member.name;
+
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'btn-clear';
+        removeBtn.title = 'Remove ' + member.name;
+        removeBtn.setAttribute('aria-label', 'Remove ' + member.name);
+        removeBtn.textContent = '×';
+        removeBtn.addEventListener('click', () => {
+          selectedMembers = selectedMembers.filter((item) => memberKey(item) !== memberKey(member));
+          renderMemberChips();
+        });
+
+        chip.appendChild(label);
+        chip.appendChild(removeBtn);
+        el.appendChild(chip);
+      }
+    }
+
+    function addSelectedMember(item) {
+      if (selectedMembers.some((member) => memberKey(member) === memberKey(item))) {
+        document.getElementById('target-feedback').textContent = item.name + ' is already selected.';
+        document.getElementById('target-feedback').className = 'ok';
+        return;
+      }
+      selectedMembers.push({ name: item.name, id: item.id || '' });
+      renderMemberChips();
+      document.getElementById('member-search').value = '';
+      document.getElementById('member-list').hidden = true;
+      document.getElementById('target-feedback').textContent = 'Added ' + item.name + '. Add more or click Save.';
+      document.getElementById('target-feedback').className = 'ok';
+    }
 
     function isFormFocused() {
       const el = document.activeElement;
       return el && (el.id === 'group-search' || el.id === 'member-search');
     }
 
+    function setChip(el, text) {
+      const row = el.closest('.pick-row');
+      if (!text) {
+        el.textContent = '';
+        if (row) row.classList.remove('visible');
+        return;
+      }
+      el.textContent = text;
+      if (row) row.classList.add('visible');
+    }
+
+    function hasActiveMonitoring() {
+      return !!document.getElementById('target-active').textContent.trim();
+    }
+
+    async function stopMonitoringOnServer() {
+      const res = await fetch('/setup/targets?token=' + encodeURIComponent(token), { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to stop monitoring');
+      document.getElementById('target-active').textContent = '';
+      return data;
+    }
+
+    function clearMemberSelection() {
+      selectedMembers = [];
+      renderMemberChips();
+      document.getElementById('member-search').value = '';
+      document.getElementById('member-list').hidden = true;
+    }
+
+    async function clearGroupSelection({ stopMonitoring = true } = {}) {
+      const hadMonitoring = stopMonitoring && hasActiveMonitoring();
+      document.getElementById('groupId').value = '';
+      document.getElementById('groupName').value = '';
+      setChip(document.getElementById('group-selected'), '');
+      document.getElementById('group-search').value = '';
+      document.getElementById('group-list').hidden = true;
+      allMembers = [];
+      clearMemberSelection();
+      document.getElementById('load-members').disabled = true;
+      document.getElementById('member-search').disabled = true;
+      const feedback = document.getElementById('target-feedback');
+      if (hadMonitoring) {
+        try {
+          await stopMonitoringOnServer();
+          feedback.textContent = 'Group removed — monitoring stopped.';
+          feedback.className = 'ok';
+        } catch (err) {
+          feedback.textContent = err.message;
+          feedback.className = 'err';
+        }
+      } else {
+        feedback.textContent = 'Group removed.';
+        feedback.className = 'ok';
+      }
+    }
+
+    async function clearMemberOnly({ stopMonitoring = true } = {}) {
+      const hadMonitoring = stopMonitoring && hasActiveMonitoring();
+      clearMemberSelection();
+      const feedback = document.getElementById('target-feedback');
+      if (hadMonitoring) {
+        try {
+          await stopMonitoringOnServer();
+          feedback.textContent = 'Member removed — monitoring stopped.';
+          feedback.className = 'ok';
+        } catch (err) {
+          feedback.textContent = err.message;
+          feedback.className = 'err';
+        }
+      } else {
+        feedback.textContent = 'Member removed.';
+        feedback.className = 'ok';
+      }
+    }
+
     function setSelection(kind, item) {
       if (kind === 'group') {
         document.getElementById('groupId').value = item.id;
         document.getElementById('groupName').value = item.name;
-        document.getElementById('group-selected').textContent = 'Selected: ' + item.name;
+        setChip(document.getElementById('group-selected'), 'Selected: ' + item.name);
         document.getElementById('group-search').value = '';
         document.getElementById('group-list').hidden = true;
         document.getElementById('load-members').disabled = false;
         document.getElementById('member-search').disabled = false;
         allMembers = [];
-        document.getElementById('memberId').value = '';
-        document.getElementById('memberName').value = '';
-        document.getElementById('member-selected').textContent = '';
-        document.getElementById('member-list').hidden = true;
+        clearMemberSelection();
         loadMembers();
       } else {
-        document.getElementById('memberId').value = item.id;
-        document.getElementById('memberName').value = item.name;
-        document.getElementById('member-selected').textContent = 'Selected: ' + item.name;
-        document.getElementById('member-search').value = '';
-        document.getElementById('member-list').hidden = true;
+        addSelectedMember(item);
       }
     }
 
@@ -256,15 +454,17 @@ function renderPage({ token }) {
       return items.filter((item) => item.name.toLowerCase().includes(q));
     }
 
-    async function loadGroups() {
+    async function loadGroups({ refresh = false } = {}) {
       const btn = document.getElementById('load-groups');
       if (btn.disabled) return;
       btn.disabled = true;
+      document.getElementById('sync-groups').disabled = true;
       btn.textContent = 'Loading groups…';
       document.getElementById('target-feedback').textContent = 'Loading groups (usually a few seconds)…';
       document.getElementById('target-feedback').className = '';
       try {
-        const res = await fetch('/setup/groups?token=' + encodeURIComponent(token));
+        const refreshParam = refresh ? '&refresh=1' : '';
+        const res = await fetch('/setup/groups?token=' + encodeURIComponent(token) + refreshParam);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Failed to load groups');
         if (!data.ready) throw new Error('Connect WhatsApp first (scan QR above).');
@@ -284,11 +484,38 @@ function renderPage({ token }) {
         document.getElementById('target-feedback').className = 'err';
       } finally {
         btn.disabled = !whatsAppReady;
+        document.getElementById('sync-groups').disabled = !whatsAppReady;
         btn.textContent = allGroups.length ? 'Refresh groups' : 'Load my groups';
       }
     }
 
-    async function loadMembers() {
+    async function syncGroups() {
+      const btn = document.getElementById('sync-groups');
+      if (btn.disabled) return;
+      btn.disabled = true;
+      document.getElementById('load-groups').disabled = true;
+      btn.textContent = 'Syncing…';
+      document.getElementById('target-feedback').textContent =
+        'Syncing from WhatsApp on your phone (~10 seconds). New groups appear after this.';
+      document.getElementById('target-feedback').className = '';
+      try {
+        const res = await fetch('/setup/sync?token=' + encodeURIComponent(token), { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Sync failed');
+        document.getElementById('target-feedback').textContent = 'Sync done. Loading groups…';
+        document.getElementById('target-feedback').className = 'ok';
+        await loadGroups({ refresh: true });
+      } catch (err) {
+        document.getElementById('target-feedback').textContent = err.message;
+        document.getElementById('target-feedback').className = 'err';
+      } finally {
+        btn.disabled = !whatsAppReady;
+        document.getElementById('load-groups').disabled = !whatsAppReady;
+        btn.textContent = 'Sync from phone';
+      }
+    }
+
+    async function loadMembers({ refresh = false } = {}) {
       const groupId = document.getElementById('groupId').value;
       if (!groupId) return;
       const btn = document.getElementById('load-members');
@@ -298,15 +525,16 @@ function renderPage({ token }) {
       document.getElementById('target-feedback').textContent = 'Loading members (usually a few seconds)…';
       document.getElementById('target-feedback').className = '';
       try {
+        const refreshParam = refresh ? '&refresh=1' : '';
         const res = await fetch(
-          '/setup/members?token=' + encodeURIComponent(token) + '&groupId=' + encodeURIComponent(groupId)
+          '/setup/members?token=' + encodeURIComponent(token) + '&groupId=' + encodeURIComponent(groupId) + refreshParam
         );
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Failed to load members');
         allMembers = data.members || [];
         document.getElementById('target-feedback').textContent =
           allMembers.length
-            ? 'Found ' + allMembers.length + ' member(s). Search and select one.'
+            ? 'Found ' + allMembers.length + ' member(s). Search and click to add.'
             : 'No members found.';
         document.getElementById('target-feedback').className = 'ok';
         renderComboList(
@@ -318,13 +546,16 @@ function renderPage({ token }) {
         document.getElementById('target-feedback').textContent = err.message;
         document.getElementById('target-feedback').className = 'err';
       } finally {
-        btn.disabled = false;
+        btn.disabled = !whatsAppReady || !groupId;
         btn.textContent = allMembers.length ? 'Refresh members' : 'Load members';
       }
     }
 
-    document.getElementById('load-groups').addEventListener('click', loadGroups);
-    document.getElementById('load-members').addEventListener('click', loadMembers);
+    document.getElementById('load-groups').addEventListener('click', () => loadGroups());
+    document.getElementById('sync-groups').addEventListener('click', syncGroups);
+    document.getElementById('load-members').addEventListener('click', () => loadMembers());
+    document.getElementById('clear-group').addEventListener('click', () => clearGroupSelection());
+    document.getElementById('clear-member').addEventListener('click', () => clearMemberOnly());
 
     document.getElementById('group-search').addEventListener('input', (e) => {
       renderComboList(
@@ -367,21 +598,60 @@ function renderPage({ token }) {
       }
     });
 
+    function clearTargetForm() {
+      document.getElementById('groupName').value = '';
+      document.getElementById('groupId').value = '';
+      setChip(document.getElementById('group-selected'), '');
+      clearMemberSelection();
+      document.getElementById('target-active').textContent = '';
+      document.getElementById('target-feedback').textContent = '';
+      document.getElementById('target-feedback').className = '';
+      document.getElementById('group-search').value = '';
+      document.getElementById('member-search').value = '';
+      document.getElementById('group-list').hidden = true;
+      document.getElementById('member-list').hidden = true;
+      document.getElementById('load-groups').textContent = 'Load my groups';
+      document.getElementById('load-members').textContent = 'Load members';
+      document.getElementById('load-members').disabled = true;
+      document.getElementById('member-search').disabled = true;
+      document.getElementById('load-groups').disabled = true;
+      document.getElementById('sync-groups').disabled = true;
+      document.getElementById('target-source').textContent =
+        'Scan QR, then load groups and pick a member.';
+      allGroups = [];
+      allMembers = [];
+      initialPoll = true;
+    }
+
     function applyTargetData(data, { updateFields = true } = {}) {
       if (updateFields && !isFormFocused()) {
         if (data.groupName) {
           document.getElementById('groupName').value = data.groupName;
-          document.getElementById('group-selected').textContent = 'Selected: ' + data.groupName;
-        }
-        if (data.groupId) document.getElementById('groupId').value = data.groupId;
-        if (data.memberName) {
-          document.getElementById('memberName').value = data.memberName;
-          document.getElementById('member-selected').textContent = 'Selected: ' + data.memberName;
+          setChip(document.getElementById('group-selected'), 'Selected: ' + data.groupName);
+        } else {
+          document.getElementById('groupName').value = '';
+          setChip(document.getElementById('group-selected'), '');
         }
         if (data.groupId) {
+          document.getElementById('groupId').value = data.groupId;
           document.getElementById('load-members').disabled = !whatsAppReady;
           document.getElementById('member-search').disabled = !whatsAppReady;
+        } else {
+          document.getElementById('groupId').value = '';
+          document.getElementById('load-members').disabled = true;
+          document.getElementById('member-search').disabled = true;
         }
+        if (Array.isArray(data.members) && data.members.length) {
+          selectedMembers = data.members.map((member) => ({
+            name: member.name,
+            id: member.id || ''
+          }));
+        } else if (data.memberName) {
+          selectedMembers = [{ name: data.memberName, id: data.memberId || '' }];
+        } else {
+          selectedMembers = [];
+        }
+        renderMemberChips();
       }
       const sourceEl = document.getElementById('target-source');
       if (data.source) {
@@ -392,6 +662,8 @@ function renderPage({ token }) {
       if (data.monitoring) {
         document.getElementById('target-active').textContent =
           'Active: ' + data.monitoring.group + ' → ' + data.monitoring.member;
+      } else {
+        document.getElementById('target-active').textContent = '';
       }
     }
 
@@ -403,16 +675,29 @@ function renderPage({ token }) {
 
     document.getElementById('target-form').addEventListener('submit', async (e) => {
       e.preventDefault();
+      if (!whatsAppReady) {
+        document.getElementById('target-feedback').textContent = 'Connect WhatsApp first (scan QR above).';
+        document.getElementById('target-feedback').className = 'err';
+        return;
+      }
       const btn = document.getElementById('save-targets');
       const feedback = document.getElementById('target-feedback');
       const groupName = document.getElementById('groupName').value.trim()
         || document.getElementById('group-search').value.trim();
-      const memberName = document.getElementById('memberName').value.trim()
-        || document.getElementById('member-search').value.trim();
       const groupId = document.getElementById('groupId').value.trim();
-      const memberId = document.getElementById('memberId').value.trim();
-      if (!groupName || !memberName) {
-        feedback.textContent = 'Select or enter both group and member.';
+      const members = selectedMembers.map((member) => ({
+        name: member.name,
+        id: member.id || ''
+      }));
+      const typedMember = document.getElementById('member-search').value.trim();
+      if (
+        typedMember &&
+        !members.some((member) => member.name.toLowerCase() === typedMember.toLowerCase())
+      ) {
+        members.push({ name: typedMember, id: '' });
+      }
+      if (!groupName || !members.length) {
+        feedback.textContent = 'Select a group and at least one member.';
         feedback.className = 'err';
         return;
       }
@@ -424,7 +709,7 @@ function renderPage({ token }) {
         const res = await fetch('/setup/targets?token=' + encodeURIComponent(token), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ groupName, memberName, groupId, memberId })
+          body: JSON.stringify({ groupName, groupId, members })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Save failed');
@@ -445,7 +730,15 @@ function renderPage({ token }) {
 
     let tickInFlight = false;
     let initialPoll = true;
+    let wasReady = false;
     const POLL_MS = 3000;
+    const emptyTargets = {
+      groupName: '',
+      groupId: '',
+      members: [],
+      source: null,
+      monitoring: null
+    };
 
     function updateQrUi(status) {
       const qr = document.getElementById('qr');
@@ -485,7 +778,10 @@ function renderPage({ token }) {
     document.getElementById('logout-btn').addEventListener('click', async () => {
       const btn = document.getElementById('logout-btn');
       btn.disabled = true;
-      document.getElementById('qr-hint').textContent = 'Logging out… new QR coming soon.';
+      whatsAppReady = false;
+      clearTargetForm();
+      updateQrUi('starting');
+      document.getElementById('qr-hint').textContent = 'Clearing session… new QR coming soon.';
       try {
         const res = await fetch('/setup/logout?token=' + encodeURIComponent(token), { method: 'POST' });
         const data = await res.json();
@@ -509,12 +805,20 @@ function renderPage({ token }) {
 
         setStatus(data.message, data.status);
         updateQrUi(data.status);
-        whatsAppReady = data.ready || data.status === 'ready';
-        document.getElementById('load-groups').disabled = !whatsAppReady;
+        const ready = data.ready || data.status === 'ready';
+        whatsAppReady = ready;
+        document.getElementById('target-panel').classList.toggle('session-off', !ready);
+        document.getElementById('load-groups').disabled = !ready;
+        document.getElementById('sync-groups').disabled = !ready;
 
-        if (data.targets) {
-          applyTargetData(data.targets, { updateFields: initialPoll });
+        if (!ready) {
+          applyTargetData(emptyTargets, { updateFields: !isFormFocused() });
+          initialPoll = true;
+          wasReady = false;
+        } else if (data.targets) {
+          applyTargetData(data.targets, { updateFields: initialPoll || !wasReady });
           initialPoll = false;
+          wasReady = true;
         }
 
         if (data.logs?.logs?.length) {
@@ -544,9 +848,11 @@ function createSetupServer({
   serverIp,
   getTargets,
   onSaveTargets,
+  onClearTargets,
   onLogout,
   onListGroups,
   onListMembers,
+  onSyncCatalog,
   isWhatsAppReady
 }) {
   let currentQr = null;
@@ -565,6 +871,40 @@ function createSetupServer({
       return res.status(401).type('text/plain').send('Unauthorized — invalid or missing setup token.');
     }
     next();
+  }
+
+  function isWhatsAppConnected() {
+    return isWhatsAppReady ? isWhatsAppReady() : status === 'ready';
+  }
+
+  function buildTargetsResponse() {
+    if (!isWhatsAppConnected()) {
+      return {
+        groupName: '',
+        groupId: '',
+        members: [],
+        source: null,
+        monitoring: null
+      };
+    }
+
+    const targets = getTargets ? getTargets() : null;
+    const members = targets?.members || [];
+    return {
+      groupName: targets?.groupName || '',
+      groupId: targets?.groupId || '',
+      members,
+      memberName: memberLabels(members),
+      source: targets?.source || null,
+      monitoring
+    };
+  }
+
+  function clearSessionState(message) {
+    monitoring = null;
+    currentQr = null;
+    status = 'starting';
+    statusMessage = message || 'Session cleared. Waiting for new QR code...';
   }
 
   function appendLog(line) {
@@ -604,10 +944,23 @@ function createSetupServer({
       return res.status(503).json({ error: 'Group list is not configured.' });
     }
     try {
-      const result = await onListGroups();
+      const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
+      const result = await onListGroups({ refresh });
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: err.message, ready: isWhatsAppReady?.() || false, groups: [] });
+    }
+  });
+
+  app.post('/setup/sync', checkToken, async (req, res) => {
+    if (!onSyncCatalog) {
+      return res.status(503).json({ error: 'Sync is not configured.' });
+    }
+    try {
+      const result = await onSyncCatalog();
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
     }
   });
 
@@ -620,7 +973,8 @@ function createSetupServer({
       return res.status(503).json({ error: 'Member list is not configured.' });
     }
     try {
-      const members = await onListMembers(groupId);
+      const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
+      const members = await onListMembers(groupId, { refresh });
       res.json({ members });
     } catch (err) {
       res.status(500).json({ error: err.message, members: [] });
@@ -628,24 +982,37 @@ function createSetupServer({
   });
 
   app.get('/setup/targets', checkToken, (req, res) => {
-    const targets = getTargets ? getTargets() : null;
-    res.json({
-      groupName: targets?.groupName || '',
-      memberName: targets?.memberName || '',
-      groupId: targets?.groupId || '',
-      source: targets?.source || null,
-      monitoring
-    });
+    res.json(buildTargetsResponse());
+  });
+
+  app.delete('/setup/targets', checkToken, async (req, res) => {
+    if (!onClearTargets) {
+      return res.status(503).json({ error: 'Clear targets is not configured.' });
+    }
+    try {
+      const result = await onClearTargets();
+      monitoring = null;
+      res.json({ ok: true, monitoring: result?.monitoring || null });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
   });
 
   app.post('/setup/targets', checkToken, async (req, res) => {
-    const groupName = req.body?.groupName?.trim();
-    const memberName = req.body?.memberName?.trim();
-    const groupId = req.body?.groupId?.trim() || '';
-    const memberId = req.body?.memberId?.trim() || '';
+    if (!isWhatsAppConnected()) {
+      return res.status(503).json({ error: 'Connect WhatsApp first (scan QR above).' });
+    }
 
-    if (!groupName || !memberName) {
-      return res.status(400).json({ error: 'Group and member are required.' });
+    const groupName = req.body?.groupName?.trim();
+    const groupId = req.body?.groupId?.trim() || '';
+    const members = normalizeMembers(
+      req.body?.members,
+      req.body?.memberName,
+      req.body?.memberId
+    );
+
+    if (!groupName || !members.length) {
+      return res.status(400).json({ error: 'Group and at least one member are required.' });
     }
 
     if (!onSaveTargets) {
@@ -653,13 +1020,13 @@ function createSetupServer({
     }
 
     try {
-      const result = await onSaveTargets(groupName, memberName, groupId, memberId);
+      const result = await onSaveTargets(groupName, groupId, members);
       res.json({
         ok: true,
         groupName,
-        memberName,
         groupId,
-        memberId,
+        members,
+        memberName: memberLabels(members),
         warning: result?.warning || null,
         monitoring: result?.monitoring || monitoring
       });
@@ -675,20 +1042,13 @@ function createSetupServer({
 
   app.get('/setup/poll', checkToken, (req, res) => {
     const since = Math.max(0, Number(req.query.since) || 0);
-    const targets = getTargets ? getTargets() : null;
+    const ready = isWhatsAppConnected();
     res.json({
       status,
       message: statusMessage,
-      ready: isWhatsAppReady ? isWhatsAppReady() : status === 'ready',
-      monitoring,
-      targets: {
-        groupName: targets?.groupName || '',
-        memberName: targets?.memberName || '',
-        groupId: targets?.groupId || '',
-        memberId: targets?.memberId || '',
-        source: targets?.source || null,
-        monitoring
-      },
+      ready,
+      monitoring: ready ? monitoring : null,
+      targets: buildTargetsResponse(),
       logs: { logs: logs.slice(since), total: logs.length }
     });
   });
@@ -698,12 +1058,9 @@ function createSetupServer({
       return res.status(503).json({ error: 'Logout is not configured.' });
     }
     try {
+      clearSessionState('Clearing session…');
       await onLogout();
-      status = 'starting';
-      statusMessage = 'Session cleared. Waiting for new QR code...';
-      currentQr = null;
-      monitoring = null;
-      res.json({ ok: true });
+      res.json({ ok: true, targetsCleared: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -752,6 +1109,7 @@ function createSetupServer({
     start,
     close,
     appendLog,
+    clearSessionState,
     setMonitoring(info) {
       monitoring = info;
     },

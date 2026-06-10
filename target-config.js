@@ -3,16 +3,44 @@ const path = require('path');
 
 const CONFIG_PATH = path.join(__dirname, 'targets.json');
 
+function normalizeMembers(members, memberName, memberId) {
+  if (Array.isArray(members) && members.length) {
+    return members
+      .map((member) => ({
+        name: String(member.name || member.memberName || '').trim(),
+        id: String(member.id || member.memberId || '').trim() || null
+      }))
+      .filter((member) => member.name);
+  }
+
+  if (memberName?.trim()) {
+    return [{ name: memberName.trim(), id: memberId?.trim() || null }];
+  }
+
+  return [];
+}
+
+function parseEnvMembers(memberName, userId) {
+  if (!memberName?.trim()) return [];
+  const names = memberName.split(',').map((part) => part.trim()).filter(Boolean);
+  const ids = (userId || '').split(',').map((part) => part.trim());
+  return names.map((name, index) => ({ name, id: ids[index] || null }));
+}
+
+function memberLabels(members) {
+  return members.map((member) => member.name).join(', ');
+}
+
 function loadTargetConfig() {
   if (!fs.existsSync(CONFIG_PATH)) return null;
   try {
     const data = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-    if (!data?.groupName?.trim() || !data?.memberName?.trim()) return null;
+    const members = normalizeMembers(data.members, data.memberName, data.memberId);
+    if (!data?.groupName?.trim() || !members.length) return null;
     return {
       groupName: data.groupName.trim(),
-      memberName: data.memberName.trim(),
       groupId: data.groupId?.trim() || null,
-      memberId: data.memberId?.trim() || null,
+      members,
       updatedAt: data.updatedAt || null
     };
   } catch {
@@ -20,12 +48,18 @@ function loadTargetConfig() {
   }
 }
 
-function saveTargetConfig({ groupName, memberName, groupId, memberId }) {
+function clearTargetConfig() {
+  if (fs.existsSync(CONFIG_PATH)) {
+    fs.unlinkSync(CONFIG_PATH);
+  }
+}
+
+function saveTargetConfig({ groupName, groupId, members }) {
+  const normalized = normalizeMembers(members);
   const data = {
     groupName: groupName.trim(),
-    memberName: memberName.trim(),
     groupId: groupId?.trim() || null,
-    memberId: memberId?.trim() || null,
+    members: normalized,
     updatedAt: new Date().toISOString()
   };
   fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(data, null, 2)}\n`);
@@ -36,7 +70,7 @@ function getEffectiveTargets({ groupName, memberName, groupId, userId }) {
   if (groupName?.trim() && memberName?.trim()) {
     return {
       groupName: groupName.trim(),
-      memberName: memberName.trim(),
+      members: parseEnvMembers(memberName, userId),
       source: 'env'
     };
   }
@@ -45,9 +79,8 @@ function getEffectiveTargets({ groupName, memberName, groupId, userId }) {
   if (saved) {
     return {
       groupName: saved.groupName,
-      memberName: saved.memberName,
       groupId: saved.groupId,
-      memberId: saved.memberId,
+      members: saved.members,
       source: 'saved'
     };
   }
@@ -60,7 +93,7 @@ function getEffectiveTargets({ groupName, memberName, groupId, userId }) {
   ) {
     return {
       groupName: '',
-      memberName: '',
+      members: [],
       groupId: groupId.trim(),
       userId: userId.trim(),
       source: 'env-ids'
@@ -74,13 +107,11 @@ function getTargetInput(env) {
   const targets = getEffectiveTargets(env);
   if (!targets) return null;
 
-  if (targets.groupName && targets.memberName) {
+  if (targets.members?.length) {
     return {
       groupName: targets.groupName,
-      memberName: targets.memberName,
       groupId: targets.groupId || env.groupId?.trim() || '',
-      memberId: targets.memberId || env.userId?.trim() || '',
-      userId: env.userId?.trim() || ''
+      members: targets.members
     };
   }
 
@@ -93,7 +124,10 @@ function hasConfiguredTargets(env) {
 
 module.exports = {
   loadTargetConfig,
+  clearTargetConfig,
   saveTargetConfig,
+  normalizeMembers,
+  memberLabels,
   getEffectiveTargets,
   getTargetInput,
   hasConfiguredTargets

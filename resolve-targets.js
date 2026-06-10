@@ -23,8 +23,34 @@ function isTargetMember(senderId, displayName, { memberId, memberName }) {
   return false;
 }
 
+function isAnyTargetMember(senderId, displayName, members) {
+  if (!members?.length) return false;
+  return members.some((member) =>
+    isTargetMember(senderId, displayName, {
+      memberId: member.id || member.memberId,
+      memberName: member.name || member.memberName
+    })
+  );
+}
+
 function contactDisplayName(contact) {
-  return contact?.pushname || contact?.name || contact?.number || '';
+  return (
+    contact?.pushname ||
+    contact?.name ||
+    contact?.shortName ||
+    contact?.verifiedName ||
+    contact?.formattedName ||
+    contact?.number ||
+    ''
+  );
+}
+
+function looksLikePhoneOnly(name, id) {
+  const raw = String(name || '').trim().replace(/^\+/, '');
+  const user = String(id || '').split('@')[0];
+  if (!raw) return true;
+  if (/^\d{8,}$/.test(raw)) return true;
+  return raw === user && /^\d+$/.test(user);
 }
 
 async function resolveGroupByName(client, groupName) {
@@ -130,7 +156,9 @@ module.exports = {
   namesMatch,
   senderIdsMatch,
   isTargetMember,
+  isAnyTargetMember,
   contactDisplayName,
+  looksLikePhoneOnly,
   resolveTargets,
   findMemberInGroup
 };
