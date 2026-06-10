@@ -147,21 +147,32 @@ function renderPage({ token }) {
       'env-ids': 'Using group/user IDs from .env — enter names here or set TARGET_GROUP_NAME in .env'
     };
 
-    function applyTargetData(data) {
-      document.getElementById('groupName').value = data.groupName || '';
-      document.getElementById('memberName').value = data.memberName || '';
+    function isFormFocused() {
+      const el = document.activeElement;
+      return el && (el.id === 'groupName' || el.id === 'memberName');
+    }
+
+    function applyTargetData(data, { updateFields = true } = {}) {
+      if (updateFields && !isFormFocused()) {
+        if (data.groupName) document.getElementById('groupName').value = data.groupName;
+        if (data.memberName) document.getElementById('memberName').value = data.memberName;
+      }
       const sourceEl = document.getElementById('target-source');
-      sourceEl.textContent = data.source ? (sourceLabels[data.source] || '') : '';
+      if (data.source) {
+        sourceEl.textContent = sourceLabels[data.source] || '';
+      } else if (!data.monitoring) {
+        sourceEl.textContent = 'Enter group and member name below, then click Save & apply.';
+      }
       if (data.monitoring) {
         document.getElementById('target-active').textContent =
           'Active: ' + data.monitoring.group + ' → ' + data.monitoring.member;
       }
     }
 
-    async function loadTargets() {
+    async function loadTargets({ updateFields = true } = {}) {
       const res = await fetch('/setup/targets?token=' + encodeURIComponent(token));
       if (!res.ok) return;
-      applyTargetData(await res.json());
+      applyTargetData(await res.json(), { updateFields });
     }
 
     document.getElementById('target-form').addEventListener('submit', async (e) => {
@@ -188,7 +199,7 @@ function renderPage({ token }) {
           document.getElementById('target-active').textContent =
             'Active: ' + data.monitoring.group + ' → ' + data.monitoring.member;
         }
-        await loadTargets();
+        await loadTargets({ updateFields: true });
       } catch (err) {
         feedback.textContent = err.message;
         feedback.className = 'err';
@@ -273,11 +284,11 @@ function renderPage({ token }) {
         }
       } catch (_) {}
 
-      await loadTargets();
+      await loadTargets({ updateFields: false });
       await fetchLogs();
     }
 
-    loadTargets();
+    loadTargets({ updateFields: true });
     tick();
     setInterval(() => tick(), 1000);
   </script>
@@ -285,7 +296,7 @@ function renderPage({ token }) {
 </html>`;
 }
 
-function createSetupServer({ port, token, getTargets, onSaveTargets, onLogout }) {
+function createSetupServer({ port, token, serverIp, getTargets, onSaveTargets, onLogout }) {
   let currentQr = null;
   let status = 'starting';
   let statusMessage = 'Starting WhatsApp client...';
@@ -393,10 +404,12 @@ function createSetupServer({ port, token, getTargets, onSaveTargets, onLogout })
 
       server.once('listening', () => {
         const localUrl = `http://localhost:${port}/setup?token=${encodeURIComponent(token)}`;
+        const remoteHost = serverIp?.trim() || '<set SERVER_IP in .env>';
+        const remoteUrl = `http://${remoteHost}:${port}/setup?token=${encodeURIComponent(token)}`;
         appendLog(`[${new Date().toISOString()}] Setup page (local):  ${localUrl}`);
-        appendLog(`[${new Date().toISOString()}] Setup page (remote): http://<server-ip>:${port}/setup?token=${token}`);
+        appendLog(`[${new Date().toISOString()}] Setup page (remote): ${remoteUrl}`);
         console.log(`Setup page (local):  ${localUrl}`);
-        console.log(`Setup page (remote): http://<server-ip>:${port}/setup?token=${token}`);
+        console.log(`Setup page (remote): ${remoteUrl}`);
         resolve();
       });
 

@@ -22,6 +22,12 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const DISCOVERY_MODE = process.env.DISCOVERY_MODE === 'true';
 const SETUP_TOKEN = process.env.SETUP_TOKEN;
 const SETUP_PORT = Number(process.env.SETUP_PORT) || 3099;
+const SERVER_IP = process.env.SERVER_IP?.trim() || '';
+
+function getSetupPageUrl() {
+  const host = SERVER_IP || 'localhost';
+  return `http://${host}:${SETUP_PORT}/setup?token=${encodeURIComponent(SETUP_TOKEN || '')}`;
+}
 
 const seenMessages = new MessageDedup();
 
@@ -100,6 +106,7 @@ setupServer = SETUP_TOKEN
   ? createSetupServer({
       port: SETUP_PORT,
       token: SETUP_TOKEN,
+      serverIp: SERVER_IP,
       getTargets: () => getEffectiveTargets(envTargets()),
       onSaveTargets: async (groupName, memberName) => {
         saveTargetConfig({ groupName, memberName });
@@ -264,7 +271,7 @@ client.on('loading_screen', (percent, message) => {
 client.on('qr', (qr) => {
   if (setupServer) {
     setupServer.setQr(qr);
-    log('QR code ready — open the setup page in your browser (see log above).');
+    log(`QR code ready — open: ${getSetupPageUrl()}`);
   } else {
     log('Scan this QR code with WhatsApp on your phone:');
     qrcode.generate(qr, { small: true });
