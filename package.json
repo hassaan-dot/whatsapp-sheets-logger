@@ -1,0 +1,27 @@
+{
+  "name": "whatsapp-sheets-logger",
+  "version": "1.0.0",
+  "description": "Free WhatsApp group message logger to Google Sheets via whatsapp-web.js",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:stop": "pm2 stop whatsapp-sheets-logger",
+    "pm2:logs": "pm2 logs whatsapp-sheets-logger"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "whatsapp",
+    "google-sheets",
+    "automation"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.9.0",
+    "dotenv": "^16.5.0",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.26.0"
+  }
+}
