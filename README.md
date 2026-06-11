@@ -17,13 +17,10 @@ Free automation that monitors a WhatsApp group, logs messages from one specific 
 
 ### 1. Google Sheet setup
 
-1. Create a new Google Sheet.
-2. In **Sheet1**, add headers in row 1:
-
-   | Date | Time | Sender | Phone | Message | Type | Message ID |
-
-3. Go to **Extensions → Apps Script**.
-4. Paste the contents of `google-apps-script/Code.gs`.
+1. Create a new Google Sheet (empty **Sheet1** is fine).
+2. Go to **Extensions → Apps Script**.
+3. Paste the contents of `google-apps-script/Code.gs` and **Save**.
+4. **Auto-write column headers:** in the function dropdown at the top, choose **`setupSheetHeaders`**, then click **Run** (▶). Approve permissions when asked — row 1 is filled with all 19 columns automatically (green header row).
 5. **Deploy → New deployment → Web app**
    - Execute as: **Me**
    - Who has access: **Anyone**
@@ -151,6 +148,21 @@ POST JSON → Google Apps Script
         ↓
 Google Sheets row appended
 ```
+
+## Sheet columns (reply tracking)
+
+When your target member **replies** to someone in the group, one row shows both sides of the interaction:
+
+| Column | Example |
+|--------|---------|
+| **Is Reply** | `yes` |
+| **Reply To Sender** | `Ahmed` |
+| **Reply To Text** | `Can we meet Friday?` |
+| **Reply To Msg ID** | links to the original message id |
+
+Filter **Is Reply = yes** to see only responses. **Date** / **Time** are when WhatsApp says the message was sent (not when the bot logged it). **Logged At** is when the row was written.
+
+**Upgrading an existing sheet:** open Apps Script → run **`setupSheetHeaders`** once (overwrites row 1 with the correct headers). Then redeploy `Code.gs` if you changed it, and restart the bot. Old data rows are kept; only row 1 headers change.
 
 ## Notes
 

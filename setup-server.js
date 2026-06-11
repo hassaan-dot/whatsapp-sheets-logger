@@ -31,16 +31,89 @@ function renderPage({ token }) {
       background: #f5f5f5;
       color: #222;
     }
-    .app-header {
+    .app-navbar {
       flex-shrink: 0;
-      text-align: center;
-      padding: 1rem 1.25rem 0.5rem;
-      background: #fff;
-      border-bottom: 1px solid #e8e8e8;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.65rem 1.25rem;
+      background: #128c7e;
+      color: #fff;
+      border-bottom: 1px solid #0e6b60;
     }
-    h1 { font-size: 1.25rem; margin: 0 0 0.35rem; }
+    .navbar-brand {
+      font-size: 1rem;
+      font-weight: 700;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+    .navbar-brand small {
+      display: block;
+      font-size: 0.72rem;
+      font-weight: 400;
+      opacity: 0.85;
+      margin-top: 0.15rem;
+    }
+    .navbar-center {
+      flex: 1;
+      min-width: 0;
+      text-align: center;
+      font-size: 0.85rem;
+      opacity: 0.95;
+    }
+    .navbar-center[hidden] { display: none !important; }
+    .navbar-right {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-shrink: 0;
+    }
+    .navbar-right[hidden] { display: none !important; }
+    .user-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: rgba(255, 255, 255, 0.15);
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      border-radius: 999px;
+      padding: 0.3rem 0.65rem 0.3rem 0.45rem;
+      font-size: 0.82rem;
+      font-weight: 600;
+      max-width: 220px;
+    }
+    .user-avatar {
+      width: 1.5rem;
+      height: 1.5rem;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.25);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      flex-shrink: 0;
+    }
+    .user-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .btn-navbar-logout {
+      background: #fff;
+      color: #c00;
+      border: none;
+      border-radius: 6px;
+      padding: 0.4rem 0.7rem;
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .btn-navbar-logout:disabled { opacity: 0.65; cursor: not-allowed; }
     h2 { font-size: 1rem; text-align: left; margin: 0 0 0.75rem; }
-    .status { color: #444; margin: 0; font-size: 0.9rem; }
+    .status { color: inherit; margin: 0; font-size: 0.85rem; }
+    .status.ready { color: #dffef8; font-weight: 600; }
+    .status.error { color: #ffd4d4; font-weight: 600; }
     .app-main {
       flex: 1;
       display: flex;
@@ -54,6 +127,12 @@ function renderPage({ token }) {
       gap: 1rem;
       align-items: stretch;
       flex-shrink: 0;
+    }
+    .app-columns.logged-in #qr-section { display: none !important; }
+    .app-columns.logged-in #target-panel {
+      max-height: none;
+      flex: 1;
+      width: 100%;
     }
     #qr-section {
       flex: 0 0 300px;
@@ -120,13 +199,6 @@ function renderPage({ token }) {
       background: #fff;
     }
     #instructions { text-align: left; line-height: 1.6; width: 100%; margin: 0.75rem 0 0; padding-left: 1.1rem; font-size: 0.85rem; }
-    #logout-btn {
-      background: #fff;
-      color: #c00;
-      border: 1px solid #e0a0a0;
-      margin-top: 0.5rem;
-      font-size: 0.85rem;
-    }
     .ready { color: #0a7; font-weight: 600; }
     .error { color: #c00; }
     .session-steps {
@@ -408,9 +480,21 @@ function renderPage({ token }) {
   </style>
 </head>
 <body>
-  <header class="app-header">
-    <h1>WhatsApp Sheets Logger — Setup</h1>
-    <p id="status" class="status">Loading...</p>
+  <header class="app-navbar">
+    <div class="navbar-brand">
+      WhatsApp Sheets Logger
+      <small>Setup &amp; monitoring</small>
+    </div>
+    <p id="status" class="navbar-center status">Loading…</p>
+    <div class="navbar-right" id="navbar-user" hidden>
+      <span class="user-pill" title="Logged-in WhatsApp account">
+        <span class="user-avatar" id="user-avatar">?</span>
+        <span class="user-name" id="user-name">—</span>
+      </span>
+      <button type="button" class="btn-navbar-logout" id="navbar-logout" title="Unlink this device and show a new QR code">
+        Log out everywhere
+      </button>
+    </div>
   </header>
 
   <main class="app-main">
@@ -442,14 +526,13 @@ function renderPage({ token }) {
         <ol id="instructions">
           <li>Open <strong>WhatsApp</strong> on your phone</li>
           <li>Go to <strong>Settings → Linked devices → Link a device</strong></li>
-          <li>Scan the QR code on the left</li>
+          <li>Scan the QR code above</li>
         </ol>
-        <button type="button" id="logout-btn" style="display:none">Log out &amp; show new QR</button>
       </section>
 
       <section class="panel session-off" id="target-panel">
     <h2>Target messages</h2>
-    <p class="session-hint" id="target-session-hint">Log in with WhatsApp on the left to configure targets.</p>
+    <p class="session-hint" id="target-session-hint">Scan the QR code to log in, then configure targets here.</p>
     <p id="target-source"></p>
     <p style="font-size:0.85rem;color:#555;margin:0 0 0.75rem;">
       Select a group, then add one or more members to monitor. Or type names manually.
@@ -502,7 +585,34 @@ function renderPage({ token }) {
     function setStatus(message, status) {
       const el = document.getElementById('status');
       el.textContent = message;
-      el.className = 'status' + (status === 'ready' ? ' ready' : status === 'error' ? ' error' : '');
+      let cls = 'navbar-center status';
+      if (status === 'ready') cls += ' ready';
+      else if (status === 'error') cls += ' error';
+      el.className = cls;
+    }
+
+    function updateNavbar(data) {
+      const ready = !!(data.ready || data.status === 'ready');
+      const isError = data.status === 'error';
+      const user = data.whatsAppUser;
+      const statusEl = document.getElementById('status');
+      const userBar = document.getElementById('navbar-user');
+      const userPill = userBar.querySelector('.user-pill');
+
+      const showBar = ready || isError;
+      userBar.hidden = !showBar;
+      statusEl.hidden = ready && !!user;
+
+      if (ready && user) {
+        userPill.hidden = false;
+        document.getElementById('user-name').textContent = user.name;
+        document.getElementById('user-avatar').textContent = (user.name || '?').charAt(0).toUpperCase();
+        userPill.title = user.userId || user.name;
+      } else if (isError) {
+        userPill.hidden = true;
+      }
+
+      document.querySelector('.app-columns').classList.toggle('logged-in', ready);
     }
 
     const sourceLabels = {
@@ -1145,20 +1255,18 @@ function renderPage({ token }) {
       const section = document.getElementById('qr-section');
       const hint = document.getElementById('qr-hint');
       const instructions = document.getElementById('instructions');
-      const logoutBtn = document.getElementById('logout-btn');
       const connectedBadge = document.getElementById('qr-connected-badge');
       const showScanSteps = status === 'starting' || status === 'loading' || status === 'authenticated' || status === 'qr';
       const booting = status === 'starting' || (status === 'loading' && (qrMeta?.progress ?? 0) < 100);
 
       section.classList.toggle('is-connected', status === 'ready');
-      connectedBadge.classList.toggle('visible', status === 'ready');
+      connectedBadge.classList.toggle('visible', false);
 
       if (status === 'qr') {
         hint.textContent = qrMeta?.qrExpired
           ? 'QR expired — a fresh code will appear shortly.'
           : (message || 'Scan this QR code with your phone:');
         setQrFrameVisible(true);
-        logoutBtn.style.display = 'none';
         connectedBadge.classList.remove('visible');
 
         const qrUpdatedAt = qrMeta?.qrUpdatedAt || null;
@@ -1180,34 +1288,29 @@ function renderPage({ token }) {
           setQrFrameVisible(true);
           setQrSkeleton(true);
           hideQrImage();
-          logoutBtn.style.display = 'none';
           connectedBadge.classList.remove('visible');
         } else if (status === 'loading' && typeof qrMeta?.progress === 'number' && qrMeta.progress >= 100) {
           hint.textContent = message || 'QR scanned! Syncing account…';
           setQrFrameVisible(false);
           setQrSkeleton(false);
           hideQrImage();
-          logoutBtn.style.display = 'none';
           connectedBadge.classList.remove('visible');
         } else if (status === 'authenticated') {
           hint.textContent = message || 'QR scanned! Finishing login…';
           setQrFrameVisible(false);
           setQrSkeleton(false);
           hideQrImage();
-          logoutBtn.style.display = 'none';
           connectedBadge.classList.remove('visible');
         } else if (status === 'ready') {
-          hint.textContent = message || 'Connected — configure targets below.';
+          hint.textContent = message || 'Connected.';
           setQrFrameVisible(false);
           setQrSkeleton(false);
           hideQrImage();
-          logoutBtn.style.display = 'inline-block';
         } else if (status === 'error') {
-          hint.textContent = message || 'Login error. Try Log out to get a new QR.';
-          setQrFrameVisible(false);
-          setQrSkeleton(false);
+          hint.textContent = message || 'Login error. Use Log out everywhere in the navbar.';
+          setQrFrameVisible(true);
+          setQrSkeleton(true);
           hideQrImage();
-          logoutBtn.style.display = 'inline-block';
           connectedBadge.classList.remove('visible');
         }
       }
@@ -1230,14 +1333,15 @@ function renderPage({ token }) {
       const message = data.message || '';
       const qrMeta = buildQrMeta(data);
       setStatus(message, status);
+      updateNavbar(data);
       updateStepsUi(status, data.progress);
       updateProgressUi(status, data.progress, message);
       updateQrUi(status, message, qrMeta);
       schedulePoll(status);
     }
 
-    document.getElementById('logout-btn').addEventListener('click', async () => {
-      const btn = document.getElementById('logout-btn');
+    async function doLogout({ fast = true } = {}) {
+      const btn = document.getElementById('navbar-logout');
       btn.disabled = true;
       whatsAppReady = false;
       clearTargetForm();
@@ -1246,19 +1350,30 @@ function renderPage({ token }) {
       clearQrExpiryTimer();
       updateSessionState({
         status: 'starting',
-        message: 'Logging out from WhatsApp… this may take up to 25 seconds.',
-        progress: 0
+        message: fast
+          ? 'Logging out everywhere (fast)…'
+          : 'Logging out from WhatsApp… this may take up to 25 seconds.',
+        progress: 0,
+        ready: false,
+        whatsAppUser: null
       });
       try {
-        const res = await fetch('/setup/logout?token=' + encodeURIComponent(token), { method: 'POST' });
+        const fastParam = fast ? '&fast=1' : '';
+        const res = await fetch(
+          '/setup/logout?token=' + encodeURIComponent(token) + fastParam,
+          { method: 'POST' }
+        );
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Logout failed');
       } catch (err) {
-        document.getElementById('qr-hint').textContent = err.message;
+        setStatus(err.message, 'error');
+        document.getElementById('status').hidden = false;
       } finally {
         btn.disabled = false;
       }
-    });
+    }
+
+    document.getElementById('navbar-logout').addEventListener('click', () => doLogout({ fast: true }));
 
     async function tick() {
       if (tickInFlight) return;
@@ -1323,7 +1438,8 @@ function createSetupServer({
   onListGroups,
   onListMembers,
   onSyncCatalog,
-  isWhatsAppReady
+  isWhatsAppReady,
+  getWhatsAppUser
 }) {
   let currentQr = null;
   let qrUpdatedAt = null;
@@ -1428,10 +1544,12 @@ function createSetupServer({
   });
 
   app.get('/setup/status', checkToken, (req, res) => {
+    const ready = isWhatsAppReady ? isWhatsAppReady() : status === 'ready';
     res.json({
       ...buildStatusPayload(),
       monitoring,
-      ready: isWhatsAppReady ? isWhatsAppReady() : status === 'ready'
+      ready,
+      whatsAppUser: ready && getWhatsAppUser ? getWhatsAppUser() : null
     });
   });
 
@@ -1542,6 +1660,7 @@ function createSetupServer({
     res.json({
       ...buildStatusPayload(),
       ready,
+      whatsAppUser: ready && getWhatsAppUser ? getWhatsAppUser() : null,
       monitoring: ready ? monitoring : null,
       targets: buildTargetsResponse(),
       logs: { logs: logs.slice(since), total: logs.length }
@@ -1552,10 +1671,11 @@ function createSetupServer({
     if (!onLogout) {
       return res.status(503).json({ error: 'Logout is not configured.' });
     }
+    const fast = req.query.fast === '1' || req.query.fast === 'true' || req.body?.fast === true;
     try {
-      clearSessionState('Clearing session…');
-      await onLogout();
-      res.json({ ok: true, targetsCleared: true });
+      clearSessionState(fast ? 'Fast logout — clearing session…' : 'Clearing session…');
+      await onLogout({ fast });
+      res.json({ ok: true, targetsCleared: true, fast });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

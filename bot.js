@@ -36,6 +36,7 @@ const seenMessages = new MessageDedup();
 
 let setupServer = null;
 let activeGroupId = null;
+let activeGroupName = null;
 let activeMembers = [];
 let clientReady = false;
 let targetsResolved = false;
@@ -56,8 +57,11 @@ const membersCache = new Map();
 const PUPPETEER_TIMEOUT_MS = Number(process.env.PUPPETEER_TIMEOUT_MS) || 600000;
 const GROUPS_CACHE_MS = 5 * 60 * 1000;
 const LOGOUT_REMOTE_TIMEOUT_MS = 25000;
+const LOGOUT_FAST_TIMEOUT_MS = Number(process.env.LOGOUT_FAST_TIMEOUT_MS) || 4000;
 const LOGOUT_DESTROY_TIMEOUT_MS = 5000;
 const SYNC_TIMEOUT_MS = Number(process.env.SYNC_TIMEOUT_MS) || 180000;
+const QUOTED_LOOKUP_TIMEOUT_MS = Number(process.env.QUOTED_LOOKUP_TIMEOUT_MS) || 8000;
+const QUOTED_TEXT_MAX_LEN = 500;
 
 function clearSyncTimeout() {
   if (syncTimeout) {
@@ -144,6 +148,7 @@ setupServer = SETUP_TOKEN
       serverIp: SERVER_IP,
       getTargets: () => getEffectiveTargets(envTargets()),
       isWhatsAppReady: () => clientReady,
+      getWhatsAppUser: () => getWhatsAppUser(),
       onSyncCatalog: async () => {
         if (!clientReady) throw new Error('WhatsApp is not connected yet.');
 
@@ -257,49 +262,14 @@ setupServer = SETUP_TOKEN
       onClearTargets: async () => {
         clearTargetConfig();
         activeGroupId = null;
+        activeGroupName = null;
         activeMembers = [];
         targetsResolved = false;
         log('Targets cleared. Monitoring stopped.');
         setupServer?.setWaitingTargets();
         return { monitoring: null };
       },
-      onLogout: async () => {
-        if (isResettingSession) return;
-        isResettingSession = true;
-
-        clientReady = false;
-        targetsResolved = false;
-        activeGroupId = null;
-        activeMembers = [];
-        groupsCache = null;
-        groupsCacheAt = 0;
-        groupsLoadPromise = null;
-        syncCatalogPromise = null;
-        membersLoadPromises.clear();
-        membersCache.clear();
-
-        clearTargetConfig();
-        setupServer?.clearSessionState('Logging out from WhatsApp…');
-        log('Logging out from WhatsApp (unlinking linked device)…');
-        await unlinkWhatsAppSession();
-
-        const destroyPromise = client.destroy().catch((err) => {
-          log('Destroy note:', err.message);
-        });
-        await Promise.race([destroyPromise, sleep(LOGOUT_DESTROY_TIMEOUT_MS)]);
-
-        clearAuthSession();
-        resetAuthState();
-
-        log('Session cleared. Generating new QR code...');
-        setupServer?.setStarting('Starting fresh — QR coming soon…');
-
-        try {
-          await initializeClient();
-        } finally {
-          isResettingSession = false;
-        }
-      }
+      onLogout: async ({ fast = false } = {}) => performSessionReset({ fast })
     })
   : null;
 
@@ -370,18 +340,107 @@ function formatMessageText(message) {
   return formatMessageType(message.type) || `[${message.type}]`;
 }
 
-function buildPayload(message, contact) {
-  const now = new Date();
+function truncateText(text, max = QUOTED_TEXT_MAX_LEN) {
+  const value = String(text || '');
+  if (value.length <= max) return value;
+  return `${value.slice(0, max - 1)}…`;
+}
+
+function formatMessageTimestamp(message) {
+  const seconds = Number(message.timestamp);
+  const date = Number.isFinite(seconds) ? new Date(seconds * 1000) : new Date();
+  return {
+    date: date.toISOString().split('T')[0],
+    time: date.toLocaleTimeString('en-US', { hour12: false })
+  };
+}
+
+function extractGroupName(groupLabel, fallback = '') {
+  if (!groupLabel) return fallback;
+  const match = String(groupLabel).match(/^(.+?)\s*\([^)]+\)$/);
+  return match ? match[1].trim() : String(groupLabel).trim();
+}
+
+function joinList(value) {
+  if (!value) return '';
+  if (Array.isArray(value)) return value.filter(Boolean).join(', ');
+  return String(value);
+}
+
+function yesNo(value) {
+  return value ? 'yes' : 'no';
+}
+
+async function resolveQuotedInfo(message) {
+  if (!message.hasQuotedMsg) {
+    return { isReply: false, replyToMsgId: '', replyToSender: '', replyToText: '' };
+  }
+
+  try {
+    const quoted = await Promise.race([
+      message.getQuotedMessage(),
+      sleep(QUOTED_LOOKUP_TIMEOUT_MS).then(() => {
+        throw new Error('quoted message lookup timed out');
+      })
+    ]);
+
+    if (!quoted) {
+      return { isReply: true, replyToMsgId: '', replyToSender: '', replyToText: '' };
+    }
+
+    let quotedContact = null;
+    try {
+      quotedContact = await quoted.getContact();
+    } catch {
+      // use notify name fallback
+    }
+
+    const quotedAuthor = quoted.author || quoted.from;
+    return {
+      isReply: true,
+      replyToMsgId: quoted.id?.id || '',
+      replyToSender:
+        quotedContact?.pushname ||
+        quotedContact?.name ||
+        quoted._data?.notifyName ||
+        quoted._data?.notify_name ||
+        quotedAuthor ||
+        'Unknown',
+      replyToText: truncateText(formatMessageText(quoted))
+    };
+  } catch (err) {
+    log('Quoted message lookup skipped:', err.message);
+    return { isReply: true, replyToMsgId: '', replyToSender: '', replyToText: '' };
+  }
+}
+
+async function buildPayload(message, contact, quotedInfo) {
   const senderId = message.author || message.from;
+  const { date, time } = formatMessageTimestamp(message);
+  const hasMedia = Boolean(message.hasMedia);
+  const caption = hasMedia ? message.body?.trim() || '' : '';
 
   return {
-    date: now.toISOString().split('T')[0],
-    time: now.toLocaleTimeString('en-US', { hour12: false }),
+    date,
+    time,
+    group: activeGroupName || activeGroupId || '',
+    groupId: activeGroupId || message.from || '',
     sender: contact?.pushname || contact?.name || message._data?.notifyName || 'Unknown',
+    senderId,
     phone: senderId,
     message: formatMessageText(message),
     type: formatMessageType(message.type),
-    id: message.id.id
+    id: message.id.id,
+    isReply: yesNo(quotedInfo.isReply),
+    replyToSender: quotedInfo.replyToSender || '',
+    replyToText: quotedInfo.replyToText || '',
+    replyToMsgId: quotedInfo.replyToMsgId || '',
+    hasMedia: yesNo(hasMedia),
+    caption,
+    forwarded: yesNo(message.isForwarded),
+    links: joinList(message.links),
+    mentions: joinList(message.mentionedIds),
+    loggedAt: new Date().toISOString()
   };
 }
 
@@ -398,12 +457,12 @@ function clearAuthSession() {
   }
 }
 
-async function unlinkWhatsAppSession() {
+async function unlinkWhatsAppSession(timeoutMs = LOGOUT_REMOTE_TIMEOUT_MS) {
   try {
     await Promise.race([
       client.logout(),
-      sleep(LOGOUT_REMOTE_TIMEOUT_MS).then(() => {
-        throw new Error(`Remote logout timed out after ${LOGOUT_REMOTE_TIMEOUT_MS / 1000}s`);
+      sleep(timeoutMs).then(() => {
+        throw new Error(`Remote logout timed out after ${timeoutMs / 1000}s`);
       })
     ]);
     log('Removed from WhatsApp Linked devices on your phone.');
@@ -412,6 +471,65 @@ async function unlinkWhatsAppSession() {
     log('Remote logout failed:', err.message);
     log('Local session will still be cleared. If the device stays in Linked devices, remove it manually on your phone.');
     return false;
+  }
+}
+
+function getWhatsAppUser() {
+  if (!clientReady || !client.info) return null;
+  const wid = client.info.wid;
+  const userId =
+    typeof wid === 'object' ? wid._serialized || wid.user || '' : String(wid || '');
+  const name =
+    client.info.pushname ||
+    (userId ? userId.replace(/@.*/, '') : '') ||
+    'WhatsApp user';
+  return { name, userId };
+}
+
+async function performSessionReset({ fast = false } = {}) {
+  if (isResettingSession) return;
+  isResettingSession = true;
+
+  clientReady = false;
+  targetsResolved = false;
+  activeGroupId = null;
+  activeGroupName = null;
+  activeMembers = [];
+  groupsCache = null;
+  groupsCacheAt = 0;
+  groupsLoadPromise = null;
+  syncCatalogPromise = null;
+  membersLoadPromises.clear();
+  membersCache.clear();
+
+  clearTargetConfig();
+  setupServer?.clearSessionState(
+    fast ? 'Fast logout — clearing session…' : 'Logging out from WhatsApp…'
+  );
+
+  if (fast) {
+    log('Fast logout — unlinking device (short wait), then clearing local session…');
+    await unlinkWhatsAppSession(LOGOUT_FAST_TIMEOUT_MS);
+  } else {
+    log('Logging out from WhatsApp (unlinking linked device)…');
+    await unlinkWhatsAppSession();
+  }
+
+  const destroyPromise = client.destroy().catch((err) => {
+    log('Destroy note:', err.message);
+  });
+  await Promise.race([destroyPromise, sleep(LOGOUT_DESTROY_TIMEOUT_MS)]);
+
+  clearAuthSession();
+  resetAuthState();
+
+  log('Session cleared. Generating new QR code...');
+  setupServer?.setStarting('Starting fresh — QR coming soon…');
+
+  try {
+    await initializeClient();
+  } finally {
+    isResettingSession = false;
   }
 }
 
@@ -501,6 +619,7 @@ async function applyTargets() {
 
     if (!input || (!hasNames && !input.groupId)) {
       activeGroupId = null;
+      activeGroupName = null;
       activeMembers = [];
       log('No targets configured. Set group and member on the setup page.');
       setupServer?.setWaitingTargets();
@@ -526,6 +645,8 @@ async function applyTargets() {
     });
 
     activeGroupId = resolved.groupId;
+    activeGroupName =
+      extractGroupName(resolved.groupLabel, input.groupName) || input.groupName || resolved.groupId;
     if (members.length) {
       activeMembers = members.map((member) => ({
         id: member.id || null,
@@ -587,6 +708,7 @@ client.on('disconnected', (reason) => {
   clientReady = false;
   targetsResolved = false;
   activeGroupId = null;
+  activeGroupName = null;
   activeMembers = [];
   resetAuthState();
   setupServer?.clearSessionState(
@@ -627,17 +749,19 @@ client.on('message', async (message) => {
     if (seenMessages.has(msgId)) return;
     seenMessages.add(msgId);
 
-    // 4. Build payload
+    // 4. Build payload (with reply context when applicable)
     let contact = null;
     try {
       contact = await message.getContact();
     } catch {
       log('Contact lookup skipped (using message name instead).');
     }
-    const payload = buildPayload(message, contact);
+    const quotedInfo = await resolveQuotedInfo(message);
+    const payload = await buildPayload(message, contact, quotedInfo);
 
     // 5. Send to Google Sheets
-    log(`Logging message from ${payload.sender}: ${payload.message.substring(0, 50)}...`);
+    const replyNote = payload.isReply === 'yes' ? ` (reply to ${payload.replyToSender || 'unknown'})` : '';
+    log(`Logging message from ${payload.sender}${replyNote}: ${payload.message.substring(0, 50)}...`);
     const result = await sendToSheets(payload);
     seenMessages.flush();
 
