@@ -1328,16 +1328,30 @@ function renderPage({ token }) {
       };
     }
 
+    function normalizePoll(data) {
+      const ready = !!(data.ready || data.status === 'ready');
+      let status = data.status || 'starting';
+      let message = data.message || '';
+      if (ready) {
+        status = 'ready';
+        if (!message || /finishing|syncing|authenticated/i.test(message)) {
+          message = data.monitoring
+            ? 'Connected. Monitoring ' + data.monitoring.member + '.'
+            : 'Connected. Set targets below if needed.';
+        }
+      }
+      return Object.assign({}, data, { ready, status, message });
+    }
+
     function updateSessionState(data) {
-      const status = data.status || 'starting';
-      const message = data.message || '';
-      const qrMeta = buildQrMeta(data);
-      setStatus(message, status);
-      updateNavbar(data);
-      updateStepsUi(status, data.progress);
-      updateProgressUi(status, data.progress, message);
-      updateQrUi(status, message, qrMeta);
-      schedulePoll(status);
+      const session = normalizePoll(data);
+      const qrMeta = buildQrMeta(session);
+      setStatus(session.message, session.status);
+      updateNavbar(session);
+      updateStepsUi(session.status, session.progress);
+      updateProgressUi(session.status, session.progress, session.message);
+      updateQrUi(session.status, session.message, qrMeta);
+      schedulePoll(session.status);
     }
 
     async function doLogout({ fast = true } = {}) {
@@ -1385,8 +1399,9 @@ function renderPage({ token }) {
         if (!res.ok) return;
         const data = await res.json();
 
-        updateSessionState(data);
-        const ready = data.ready || data.status === 'ready';
+        const session = normalizePoll(data);
+        updateSessionState(session);
+        const ready = session.ready;
         whatsAppReady = ready;
         document.getElementById('target-panel').classList.toggle('session-off', !ready);
         document.getElementById('load-groups').disabled = !ready;
@@ -1396,8 +1411,8 @@ function renderPage({ token }) {
           applyTargetData(emptyTargets, { updateFields: !isFormFocused() });
           initialPoll = true;
           wasReady = false;
-        } else if (data.targets) {
-          applyTargetData(data.targets, { updateFields: initialPoll || !wasReady });
+        } else if (session.targets) {
+          applyTargetData(session.targets, { updateFields: initialPoll || !wasReady });
           initialPoll = false;
           wasReady = true;
         }
@@ -1439,7 +1454,8 @@ function createSetupServer({
   onListMembers,
   onSyncCatalog,
   isWhatsAppReady,
-  getWhatsAppUser
+  getWhatsAppUser,
+  onPollSync
 }) {
   let currentQr = null;
   let qrUpdatedAt = null;
@@ -1471,6 +1487,26 @@ function createSetupServer({
       ...buildQrPollMeta(),
       ...extra
     };
+  }
+
+  function syncStatusFromReady() {
+    if (!isWhatsAppReady?.()) return;
+
+    if (status === 'ready') return;
+
+    currentQr = null;
+    qrUpdatedAt = null;
+    loadPercent = null;
+    status = 'ready';
+
+    if (
+      !statusMessage ||
+      /finishing|syncing|authenticated|scan/i.test(statusMessage)
+    ) {
+      statusMessage = monitoring
+        ? `Connected. Monitoring ${monitoring.member}.`
+        : 'Connected. Set targets below if needed.';
+    }
   }
 
   const app = express();
@@ -1543,7 +1579,9 @@ function createSetupServer({
     }
   });
 
-  app.get('/setup/status', checkToken, (req, res) => {
+  app.get('/setup/status', checkToken, async (req, res) => {
+    if (onPollSync) await onPollSync();
+    syncStatusFromReady();
     const ready = isWhatsAppReady ? isWhatsAppReady() : status === 'ready';
     res.json({
       ...buildStatusPayload(),
@@ -1654,8 +1692,10 @@ function createSetupServer({
     res.json({ logs: logs.slice(since), total: logs.length });
   });
 
-  app.get('/setup/poll', checkToken, (req, res) => {
+  app.get('/setup/poll', checkToken, async (req, res) => {
     const since = Math.max(0, Number(req.query.since) || 0);
+    if (onPollSync) await onPollSync();
+    syncStatusFromReady();
     const ready = isWhatsAppConnected();
     res.json({
       ...buildStatusPayload(),
@@ -1751,6 +1791,7 @@ function createSetupServer({
       status = 'loading';
     },
     setQr(qr) {
+      if (status === 'ready') return;
       if (currentQr !== qr) {
         currentQr = qr;
         qrUpdatedAt = Date.now();
@@ -1760,6 +1801,7 @@ function createSetupServer({
       loadPercent = 100;
     },
     setAuthenticated(message) {
+      if (status === 'ready') return;
       currentQr = null;
       qrUpdatedAt = null;
       status = 'authenticated';

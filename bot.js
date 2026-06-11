@@ -88,6 +88,21 @@ function resetAuthState() {
   clearSyncTimeout();
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isBrowserClosedError(err) {
+  const msg = String(err?.message || err);
+  return (
+    msg.includes('Target closed') ||
+    msg.includes('Session closed') ||
+    msg.includes('Protocol error') ||
+    msg.includes('Execution context was destroyed') ||
+    msg.includes('browser has disconnected')
+  );
+}
+
 async function withRetry(fn, { attempts = 3, delayMs = 5000, label = 'operation' } = {}) {
   let lastError;
   for (let i = 1; i <= attempts; i++) {
@@ -149,6 +164,7 @@ setupServer = SETUP_TOKEN
       getTargets: () => getEffectiveTargets(envTargets()),
       isWhatsAppReady: () => clientReady,
       getWhatsAppUser: () => getWhatsAppUser(),
+      onPollSync: () => recoverConnectionStateIfNeeded(),
       onSyncCatalog: async () => {
         if (!clientReady) throw new Error('WhatsApp is not connected yet.');
 
@@ -459,8 +475,12 @@ function clearAuthSession() {
 
 async function unlinkWhatsAppSession(timeoutMs = LOGOUT_REMOTE_TIMEOUT_MS) {
   try {
+    const logoutPromise = client.logout().catch((err) => {
+      if (isBrowserClosedError(err)) return;
+      throw err;
+    });
     await Promise.race([
-      client.logout(),
+      logoutPromise,
       sleep(timeoutMs).then(() => {
         throw new Error(`Remote logout timed out after ${timeoutMs / 1000}s`);
       })
@@ -468,9 +488,91 @@ async function unlinkWhatsAppSession(timeoutMs = LOGOUT_REMOTE_TIMEOUT_MS) {
     log('Removed from WhatsApp Linked devices on your phone.');
     return true;
   } catch (err) {
+    if (isBrowserClosedError(err)) {
+      log('Session already closed (e.g. logged out from your phone).');
+      return false;
+    }
     log('Remote logout failed:', err.message);
     log('Local session will still be cleared. If the device stays in Linked devices, remove it manually on your phone.');
     return false;
+  }
+}
+
+async function safeDestroyClient() {
+  try {
+    await Promise.race([
+      client.destroy().catch((err) => {
+        if (!isBrowserClosedError(err)) throw err;
+      }),
+      sleep(LOGOUT_DESTROY_TIMEOUT_MS)
+    ]);
+  } catch (err) {
+    if (!isBrowserClosedError(err)) {
+      log('Destroy note:', err.message);
+    }
+  }
+}
+
+function refreshSetupUiState() {
+  if (!clientReady || !setupServer) return;
+
+  if (activeGroupId && activeMembers.length) {
+    const memberLabel = memberLabels(activeMembers);
+    const groupLabel = activeGroupName
+      ? `${activeGroupName} (${activeGroupId})`
+      : activeGroupId;
+    setupServer.setMonitoring({ group: groupLabel, member: memberLabel });
+    setupServer.setReady(`Connected. Monitoring ${memberLabel}.`);
+    return;
+  }
+
+  if (monitoringFromConfig()) {
+    return;
+  }
+
+  setupServer.setWaitingTargets();
+}
+
+function monitoringFromConfig() {
+  const input = getTargetInput(envTargets());
+  const members = input?.members || [];
+  if (!input?.groupName || !members.length) return false;
+
+  const memberLabel = memberLabels(members);
+  setupServer?.setMonitoring({
+    group: input.groupName,
+    member: memberLabel
+  });
+  setupServer?.setReady(`Connected. Monitoring ${memberLabel}.`);
+  return true;
+}
+
+async function recoverConnectionStateIfNeeded() {
+  if (clientReady || isResettingSession) return;
+
+  try {
+    const state = await client.getState();
+    if (state !== 'CONNECTED') return;
+
+    if (!client.info) return;
+
+    log('Session already connected — restoring setup UI state.');
+    clearSyncTimeout();
+    clientReady = true;
+
+    if (!targetsResolved) {
+      try {
+        await applyTargets();
+        targetsResolved = true;
+      } catch (err) {
+        log('ERROR restoring targets after reconnect:', err.message);
+        refreshSetupUiState();
+      }
+    } else {
+      refreshSetupUiState();
+    }
+  } catch {
+    // client not initialized yet
   }
 }
 
@@ -486,7 +588,52 @@ function getWhatsAppUser() {
   return { name, userId };
 }
 
-async function performSessionReset({ fast = false } = {}) {
+async function restartWhatsAppClient({ message = 'Starting fresh — QR coming soon…' } = {}) {
+  clearAuthSession();
+  resetAuthState();
+  setupServer?.setStarting(message);
+  log('Session cleared. Generating new QR code...');
+  await initializeClient();
+}
+
+async function restartAfterDisconnect(reason) {
+  if (isResettingSession) return;
+  isResettingSession = true;
+
+  clientReady = false;
+  targetsResolved = false;
+  activeGroupId = null;
+  activeGroupName = null;
+  activeMembers = [];
+  groupsCache = null;
+  groupsCacheAt = 0;
+  groupsLoadPromise = null;
+  syncCatalogPromise = null;
+  membersLoadPromises.clear();
+  membersCache.clear();
+  resetAuthState();
+
+  const uiMessage =
+    reason === 'LOGOUT'
+      ? 'Logged out from phone. Generating new QR code…'
+      : 'Disconnected. Generating new QR code…';
+  setupServer?.clearSessionState(uiMessage);
+
+  try {
+    log(`WhatsApp disconnected (${reason}). Restarting with a new QR code…`);
+    await safeDestroyClient();
+    await restartWhatsAppClient({ message: 'Scan QR to log in again…' });
+  } catch (err) {
+    log('Failed to restart after disconnect:', err.message);
+    setupServer?.setError(
+      'Disconnected. Click "Log out everywhere" or restart the bot, then scan QR again.'
+    );
+  } finally {
+    isResettingSession = false;
+  }
+}
+
+async function performSessionReset({ fast = false, clearTargets = true, skipRemoteLogout = false } = {}) {
   if (isResettingSession) return;
   isResettingSession = true;
 
@@ -502,32 +649,30 @@ async function performSessionReset({ fast = false } = {}) {
   membersLoadPromises.clear();
   membersCache.clear();
 
-  clearTargetConfig();
+  if (clearTargets) {
+    clearTargetConfig();
+  }
+
   setupServer?.clearSessionState(
     fast ? 'Fast logout — clearing session…' : 'Logging out from WhatsApp…'
   );
 
-  if (fast) {
-    log('Fast logout — unlinking device (short wait), then clearing local session…');
-    await unlinkWhatsAppSession(LOGOUT_FAST_TIMEOUT_MS);
+  if (!skipRemoteLogout) {
+    if (fast) {
+      log('Fast logout — unlinking device (short wait), then clearing local session…');
+      await unlinkWhatsAppSession(LOGOUT_FAST_TIMEOUT_MS);
+    } else {
+      log('Logging out from WhatsApp (unlinking linked device)…');
+      await unlinkWhatsAppSession();
+    }
   } else {
-    log('Logging out from WhatsApp (unlinking linked device)…');
-    await unlinkWhatsAppSession();
+    log('Skipping remote logout (session already ended).');
   }
 
-  const destroyPromise = client.destroy().catch((err) => {
-    log('Destroy note:', err.message);
-  });
-  await Promise.race([destroyPromise, sleep(LOGOUT_DESTROY_TIMEOUT_MS)]);
-
-  clearAuthSession();
-  resetAuthState();
-
-  log('Session cleared. Generating new QR code...');
-  setupServer?.setStarting('Starting fresh — QR coming soon…');
+  await safeDestroyClient();
 
   try {
-    await initializeClient();
+    await restartWhatsAppClient();
   } finally {
     isResettingSession = false;
   }
@@ -565,7 +710,11 @@ const client = new Client({
 
 client.on('loading_screen', (percent, message) => {
   log(`Loading WhatsApp: ${percent}% — ${message}`);
-  if (clientReady || hasAuthenticated) return;
+  if (clientReady) {
+    refreshSetupUiState();
+    return;
+  }
+  if (hasAuthenticated) return;
 
   const pct = Math.max(0, Math.min(100, Number(percent) || 0));
   if (pct >= 100) {
@@ -579,6 +728,7 @@ client.on('loading_screen', (percent, message) => {
 });
 
 client.on('qr', (qr) => {
+  if (clientReady) return;
   if (setupServer) {
     setupServer.setQr(qr);
     if (qr !== lastQrPayload) {
@@ -592,6 +742,10 @@ client.on('qr', (qr) => {
 });
 
 client.on('authenticated', () => {
+  if (clientReady) {
+    refreshSetupUiState();
+    return;
+  }
   hasAuthenticated = true;
   if (!authenticatedLogged) {
     log('Authenticated successfully. Session saved locally.');
@@ -705,15 +859,9 @@ client.on('ready', async () => {
 
 client.on('disconnected', (reason) => {
   log('Client disconnected:', reason);
-  clientReady = false;
-  targetsResolved = false;
-  activeGroupId = null;
-  activeGroupName = null;
-  activeMembers = [];
-  resetAuthState();
-  setupServer?.clearSessionState(
-    reason === 'LOGOUT' ? 'Logged out. Waiting for new QR code…' : 'Disconnected. Scan QR to reconnect.'
-  );
+  restartAfterDisconnect(reason).catch((err) => {
+    log('Disconnect recovery error:', err.message);
+  });
 });
 
 client.on('message', async (message) => {
@@ -787,10 +935,7 @@ async function initializeClient() {
     log(`Reason: ${err.message}`);
     setupServer?.setStarting('Clearing old session… QR will appear shortly.');
 
-    try {
-      await client.destroy();
-    } catch (_) {}
-
+    await safeDestroyClient();
     clearAuthSession();
     await client.initialize();
   }
@@ -816,9 +961,17 @@ main().catch((err) => {
 async function shutdown() {
   seenMessages.flush();
   setupServer?.close();
-  await client.destroy();
+  await safeDestroyClient();
   process.exit(0);
 }
+
+process.on('unhandledRejection', (reason) => {
+  if (isBrowserClosedError(reason)) {
+    log('Ignored browser close during logout/disconnect.');
+    return;
+  }
+  log('Unhandled error:', reason?.message || reason);
+});
 
 process.on('SIGINT', async () => {
   log('Shutting down...');
