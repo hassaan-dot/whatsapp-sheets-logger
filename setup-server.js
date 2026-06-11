@@ -564,18 +564,37 @@ function renderPage({ token }) {
       flex: 1;
       display: flex;
       flex-direction: column;
-      min-height: 0;
+      min-height: 12rem;
+    }
+    .logs-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      flex-shrink: 0;
+      margin-bottom: 0.5rem;
     }
     .logs-title {
-      flex-shrink: 0;
       text-align: left;
       font-size: 0.9rem;
       font-weight: 600;
-      margin: 0 0 0.5rem;
+      margin: 0;
+    }
+    .btn-logs-expand {
+      display: none;
+      background: #fff;
+      color: #128c7e;
+      border: 1px solid #128c7e;
+      border-radius: 6px;
+      padding: 0.3rem 0.55rem;
+      font-size: 0.72rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
     }
     #logs {
       flex: 1;
-      min-height: 0;
+      min-height: 10rem;
       text-align: left;
       background: #1e1e1e;
       color: #d4d4d4;
@@ -585,15 +604,187 @@ function renderPage({ token }) {
       padding: 0.75rem 1rem;
       border-radius: 8px;
       overflow-y: auto;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
       white-space: pre-wrap;
       word-break: break-word;
       margin: 0;
       border: 1px solid #333;
     }
+    .logs-section.expanded #logs {
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      max-height: none;
+      min-height: 0;
+      border-radius: 0;
+      padding: 3rem 0.75rem 1rem;
+      font-size: 0.8rem;
+    }
+    .logs-section.expanded .btn-logs-expand::after { content: 'Close'; }
+    .logs-section.expanded .btn-logs-expand { display: inline-block; position: fixed; top: 0.65rem; right: 0.75rem; z-index: 201; }
+    .logs-section.expanded .logs-header .logs-title { position: fixed; top: 0.7rem; left: 0.75rem; z-index: 201; color: #fff; }
     @media (max-width: 768px) {
-      .app-columns { flex-direction: column; }
-      #qr-section { flex: none; width: 100%; min-height: auto; }
-      #target-panel { max-height: none; }
+      html, body {
+        height: auto;
+        min-height: 100%;
+        overflow-x: hidden;
+        overflow-y: auto;
+        max-width: 100%;
+        -webkit-overflow-scrolling: touch;
+      }
+      body {
+        display: block;
+        min-height: 100vh;
+        min-height: 100dvh;
+      }
+      .app-navbar {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+      }
+      .app-main {
+        display: block;
+        min-height: auto;
+        padding-bottom: calc(1.25rem + env(safe-area-inset-bottom, 0px));
+      }
+      .app-columns {
+        flex-shrink: 1;
+      }
+      .app-navbar {
+        flex-wrap: wrap;
+        align-items: flex-start;
+        padding: 0.55rem 0.75rem;
+        gap: 0.45rem;
+      }
+      .navbar-brand {
+        white-space: normal;
+        font-size: 0.88rem;
+        flex: 1 1 auto;
+        min-width: 0;
+        max-width: calc(100% - 8rem);
+      }
+      .navbar-brand small { font-size: 0.68rem; }
+      .navbar-center {
+        order: 4;
+        flex: 1 1 100%;
+        text-align: left;
+        font-size: 0.78rem;
+      }
+      .navbar-right {
+        flex: 1 1 100%;
+        flex-basis: 100%;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.4rem;
+        max-width: 100%;
+      }
+      .user-pill {
+        flex: 1 1 auto;
+        min-width: 0;
+        max-width: calc(100% - 7.5rem);
+        font-size: 0.76rem;
+      }
+      .btn-navbar-logout {
+        flex: 0 1 auto;
+        max-width: 7.25rem;
+        white-space: normal;
+        text-align: center;
+        padding: 0.4rem 0.5rem;
+        font-size: 0.7rem;
+        line-height: 1.2;
+      }
+      .app-main {
+        padding: 0.65rem 0.75rem calc(1.5rem + env(safe-area-inset-bottom, 0px));
+        gap: 0.75rem;
+        width: 100%;
+        max-width: 100vw;
+      }
+      .app-columns {
+        flex-direction: column;
+        width: 100%;
+        max-width: 100%;
+      }
+      #qr-section {
+        flex: none;
+        width: 100%;
+        min-height: auto;
+        max-width: 100%;
+      }
+      .qr-frame {
+        width: min(256px, calc(100vw - 3rem));
+        height: min(256px, calc(100vw - 3rem));
+        max-width: 100%;
+      }
+      #qr {
+        width: 100%;
+        height: 100%;
+        max-width: 256px;
+        max-height: 256px;
+      }
+      #target-panel {
+        max-height: none;
+        width: 100%;
+        max-width: 100%;
+        padding: 0.85rem;
+      }
+      .panel { max-width: 100%; }
+      .portions-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .portions-toolbar .btn-secondary,
+      #add-portion,
+      #save-targets {
+        width: 100%;
+        margin-left: 0;
+      }
+      .portion-card { padding: 0.75rem; }
+      .portion-header {
+        flex-wrap: wrap;
+        gap: 0.4rem;
+      }
+      .btn-remove-portion { width: 100%; text-align: center; }
+      .webhook-input {
+        font-size: 0.8rem;
+        word-break: break-all;
+      }
+      .sheet-setup-guide summary {
+        font-size: 0.8rem;
+        line-height: 1.35;
+        padding: 0.6rem 0.7rem;
+      }
+      .sheet-setup-body { font-size: 0.78rem; }
+      .combo-list { max-height: 160px; }
+      .logs-section {
+        min-height: auto;
+        margin-top: 0.75rem;
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+      }
+      .logs-header { margin-bottom: 0.4rem; }
+      .btn-logs-expand { display: inline-block; }
+      .btn-logs-expand::after { content: 'Expand'; }
+      #logs {
+        font-size: 0.72rem;
+        min-height: 16rem;
+        max-height: min(55vh, 22rem);
+        flex: none;
+      }
+    }
+    @media (max-width: 420px) {
+      .navbar-right {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .user-pill,
+      .btn-navbar-logout {
+        max-width: 100%;
+        width: 100%;
+        justify-content: center;
+      }
+      .btn-navbar-logout { max-width: 100%; }
     }
   </style>
 </head>
@@ -688,8 +879,11 @@ function renderPage({ token }) {
       </section>
     </div>
 
-    <section class="logs-section">
-      <p class="logs-title">Logs</p>
+    <section class="logs-section" id="logs-section">
+      <div class="logs-header">
+        <p class="logs-title">Logs</p>
+        <button type="button" class="btn-logs-expand" id="logs-expand" aria-label="Expand logs fullscreen"></button>
+      </div>
       <pre id="logs"></pre>
     </section>
   </main>
@@ -1584,6 +1778,16 @@ function renderPage({ token }) {
     }
 
     document.getElementById('navbar-logout').addEventListener('click', () => doLogout({ fast: true }));
+
+    document.getElementById('logs-expand').addEventListener('click', () => {
+      const section = document.getElementById('logs-section');
+      const expanded = section.classList.toggle('expanded');
+      document.body.style.overflow = expanded ? 'hidden' : '';
+      if (expanded) {
+        const logs = document.getElementById('logs');
+        logs.scrollTop = logs.scrollHeight;
+      }
+    });
 
     async function tick() {
       if (tickInFlight) return;
