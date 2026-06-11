@@ -9,12 +9,13 @@ const { createSetupServer } = require('./setup-server');
 const { isAnyTargetMember, resolveTargets } = require('./resolve-targets');
 const { syncWhatsAppCatalog, listGroups, listGroupMembers } = require('./whatsapp-catalog');
 const {
-  saveTargetConfig,
+  saveAllTargetConfigs,
   clearTargetConfig,
   memberLabels,
   getEffectiveTargets,
-  getTargetInput,
-  hasConfiguredTargets
+  getAllTargetInputs,
+  hasConfiguredTargets,
+  maskWebhookUrl
 } = require('./target-config');
 
 const TARGET_GROUP_ID = process.env.TARGET_GROUP_ID;
@@ -35,9 +36,7 @@ function getSetupPageUrl() {
 const seenMessages = new MessageDedup();
 
 let setupServer = null;
-let activeGroupId = null;
-let activeGroupName = null;
-let activeMembers = [];
+let activeTargets = [];
 let clientReady = false;
 let targetsResolved = false;
 let isResettingSession = false;
@@ -253,10 +252,14 @@ setupServer = SETUP_TOKEN
         membersLoadPromises.set(groupId, loadPromise);
         return loadPromise;
       },
-      onSaveTargets: async (groupName, groupId, members) => {
-        saveTargetConfig({ groupName, groupId, members });
-        const labels = memberLabels(members);
-        log(`Targets saved: group="${groupName}", members="${labels}"`);
+      onSaveAllTargets: async (targets) => {
+        const saved = saveAllTargetConfigs(targets);
+        log(`Saved ${saved.length} configuration(s).`);
+        for (const item of saved) {
+          log(
+            `  • ${item.groupName} → ${memberLabels(item.members)} → ${maskWebhookUrl(item.webhookUrl || WEBHOOK_URL)}`
+          );
+        }
 
         let warning = null;
         if (hasNameTargets()) {
@@ -269,22 +272,21 @@ setupServer = SETUP_TOKEN
           targetsResolved = false;
           const result = await applyTargetsRef();
           targetsResolved = true;
-          return { ...result, warning };
+          return { ...result, warning, targets: saved };
         }
 
-        log('Targets will apply when WhatsApp is connected.');
-        return { monitoring: null, warning };
+        log('Configurations will apply when WhatsApp is connected.');
+        return { monitoring: null, warning, targets: saved };
       },
       onClearTargets: async () => {
         clearTargetConfig();
-        activeGroupId = null;
-        activeGroupName = null;
-        activeMembers = [];
+        activeTargets = [];
         targetsResolved = false;
-        log('Targets cleared. Monitoring stopped.');
+        log('All configurations cleared. Monitoring stopped.');
         setupServer?.setWaitingTargets();
         return { monitoring: null };
       },
+      getDefaultWebhookUrl: () => WEBHOOK_URL || '',
       onLogout: async ({ fast = false } = {}) => performSessionReset({ fast })
     })
   : null;
@@ -316,8 +318,13 @@ function validateConfig() {
   }
 }
 
-async function sendToSheets(payload) {
-  const response = await axios.post(WEBHOOK_URL, payload, {
+async function sendToSheets(payload, webhookUrl = WEBHOOK_URL) {
+  const url = webhookUrl || WEBHOOK_URL;
+  if (!url || url.includes('xxxxx')) {
+    throw new Error('No Google Sheet webhook URL configured for this group.');
+  }
+
+  const response = await axios.post(url, payload, {
     headers: { 'Content-Type': 'application/json' },
     timeout: 30000,
     maxRedirects: 5,
@@ -325,14 +332,26 @@ async function sendToSheets(payload) {
   });
 
   if (response.status >= 400) {
-    throw new Error(`Webhook HTTP ${response.status}: ${String(response.data).slice(0, 200)}`);
+    const hint =
+      response.status === 401
+        ? ' Redeploy Apps Script: Deploy → New deployment → Web app → Execute as Me → Who has access: Anyone.'
+        : '';
+    throw new Error(`Webhook HTTP ${response.status}: ${String(response.data).slice(0, 200)}.${hint}`);
   }
 
   if (typeof response.data === 'string' && response.data.includes('<!DOCTYPE html>')) {
-    throw new Error('Webhook returned HTML instead of JSON — redeploy Apps Script as Web app with doPost');
+    throw new Error(
+      'Webhook returned HTML instead of JSON — redeploy Apps Script as Web app (Execute as Me, Anyone) and paste the new /exec URL.'
+    );
   }
 
   return typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+}
+
+function resolveMessageSenderId(message) {
+  if (message.author) return message.author;
+  const from = message.from || '';
+  return from.endsWith('@g.us') ? '' : from;
 }
 
 const MESSAGE_TYPE_LABELS = {
@@ -430,7 +449,7 @@ async function resolveQuotedInfo(message) {
   }
 }
 
-async function buildPayload(message, contact, quotedInfo) {
+async function buildPayload(message, contact, quotedInfo, target) {
   const senderId = message.author || message.from;
   const { date, time } = formatMessageTimestamp(message);
   const hasMedia = Boolean(message.hasMedia);
@@ -439,8 +458,8 @@ async function buildPayload(message, contact, quotedInfo) {
   return {
     date,
     time,
-    group: activeGroupName || activeGroupId || '',
-    groupId: activeGroupId || message.from || '',
+    group: target?.groupName || target?.groupId || message.from || '',
+    groupId: target?.groupId || message.from || '',
     sender: contact?.pushname || contact?.name || message._data?.notifyName || 'Unknown',
     senderId,
     phone: senderId,
@@ -513,37 +532,48 @@ async function safeDestroyClient() {
   }
 }
 
+function buildMonitoringSummary(targets = activeTargets) {
+  return targets.map((target) => ({
+    group: target.groupLabel || target.groupName || target.groupId,
+    member: memberLabels(target.members),
+    sheet: maskWebhookUrl(target.webhookUrl)
+  }));
+}
+
 function refreshSetupUiState() {
   if (!clientReady || !setupServer) return;
 
-  if (activeGroupId && activeMembers.length) {
-    const memberLabel = memberLabels(activeMembers);
-    const groupLabel = activeGroupName
-      ? `${activeGroupName} (${activeGroupId})`
-      : activeGroupId;
-    setupServer.setMonitoring({ group: groupLabel, member: memberLabel });
-    setupServer.setReady(`Connected. Monitoring ${memberLabel}.`);
+  if (activeTargets.length) {
+    const monitoring = buildMonitoringSummary();
+    setupServer.setMonitoring(monitoring);
+    const label =
+      activeTargets.length === 1
+        ? memberLabels(activeTargets[0].members)
+        : `${activeTargets.length} groups`;
+    setupServer.setReady(`Connected. Monitoring ${label}.`);
     return;
   }
 
-  if (monitoringFromConfig()) {
-    return;
-  }
-
+  if (monitoringFromConfig()) return;
   setupServer.setWaitingTargets();
 }
 
 function monitoringFromConfig() {
-  const input = getTargetInput(envTargets());
-  const members = input?.members || [];
-  if (!input?.groupName || !members.length) return false;
+  const inputs = getAllTargetInputs(envTargets(), WEBHOOK_URL).filter(
+    (input) => input.groupName && input.members?.length
+  );
+  if (!inputs.length) return false;
 
-  const memberLabel = memberLabels(members);
-  setupServer?.setMonitoring({
-    group: input.groupName,
-    member: memberLabel
-  });
-  setupServer?.setReady(`Connected. Monitoring ${memberLabel}.`);
+  setupServer?.setMonitoring(
+    inputs.map((input) => ({
+      group: input.groupName,
+      member: memberLabels(input.members),
+      sheet: maskWebhookUrl(input.webhookUrl || WEBHOOK_URL)
+    }))
+  );
+  const label =
+    inputs.length === 1 ? memberLabels(inputs[0].members) : `${inputs.length} groups`;
+  setupServer?.setReady(`Connected. Monitoring ${label}.`);
   return true;
 }
 
@@ -602,9 +632,7 @@ async function restartAfterDisconnect(reason) {
 
   clientReady = false;
   targetsResolved = false;
-  activeGroupId = null;
-  activeGroupName = null;
-  activeMembers = [];
+  activeTargets = [];
   groupsCache = null;
   groupsCacheAt = 0;
   groupsLoadPromise = null;
@@ -639,9 +667,7 @@ async function performSessionReset({ fast = false, clearTargets = true, skipRemo
 
   clientReady = false;
   targetsResolved = false;
-  activeGroupId = null;
-  activeGroupName = null;
-  activeMembers = [];
+  activeTargets = [];
   groupsCache = null;
   groupsCacheAt = 0;
   groupsLoadPromise = null;
@@ -763,67 +789,86 @@ client.on('auth_failure', (msg) => {
 
 async function applyTargets() {
   if (DISCOVERY_MODE) return { monitoring: null };
-  if (applyTargetsInProgress) return { monitoring: null };
+  if (applyTargetsInProgress) return { monitoring: buildMonitoringSummary() };
 
   applyTargetsInProgress = true;
   try {
-    const input = getTargetInput(envTargets());
-    const members = input?.members || [];
-    const hasNames = Boolean(input?.groupName && members.length);
-
-    if (!input || (!hasNames && !input.groupId)) {
-      activeGroupId = null;
-      activeGroupName = null;
-      activeMembers = [];
-      log('No targets configured. Set group and member on the setup page.');
+    const inputs = getAllTargetInputs(envTargets(), WEBHOOK_URL);
+    if (!inputs.length) {
+      activeTargets = [];
+      log('No configurations saved. Add a group on the setup page.');
       setupServer?.setWaitingTargets();
       return { monitoring: null };
     }
 
-    const hasSavedIds = Boolean(
-      input.groupId && members.some((member) => member.id)
+    const needsSyncWait = inputs.some(
+      (input) =>
+        input.members?.length &&
+        !(input.groupId && input.members.some((member) => member.id))
     );
-    if (!hasSavedIds) {
-      log('Applying targets (waiting for WhatsApp to finish syncing)...');
+    if (needsSyncWait) {
+      log('Applying configurations (waiting for WhatsApp to finish syncing)...');
       await sleep(5000);
     } else {
-      log('Applying targets...');
+      log(`Applying ${inputs.length} configuration(s)...`);
     }
 
-    const resolveInput = {
-      ...input,
-      memberName: members.map((member) => member.name).join(', ')
-    };
-    const resolved = await withRetry(() => resolveTargets(client, resolveInput), {
-      label: 'Resolve targets'
-    });
+    const resolvedTargets = [];
+    for (const input of inputs) {
+      const members = input.members || [];
+      const hasNames = Boolean(input.groupName && members.length);
+      if (!hasNames && !input.groupId) continue;
 
-    activeGroupId = resolved.groupId;
-    activeGroupName =
-      extractGroupName(resolved.groupLabel, input.groupName) || input.groupName || resolved.groupId;
-    if (members.length) {
-      activeMembers = members.map((member) => ({
-        id: member.id || null,
-        name: member.name || ''
-      }));
-    } else if (resolved.userId) {
-      activeMembers = [{ id: resolved.userId, name: '' }];
-    } else {
-      activeMembers = [];
+      try {
+        const resolveInput = hasNames
+          ? { ...input, memberName: members.map((member) => member.name).join(', ') }
+          : input;
+        const resolved = await withRetry(() => resolveTargets(client, resolveInput), {
+          label: `Resolve targets (${input.groupName || input.groupId})`
+        });
+
+        const activeMembers = members.length
+          ? members.map((member) => ({ id: member.id || null, name: member.name || '' }))
+          : resolved.userId
+            ? [{ id: resolved.userId, name: '' }]
+            : [];
+
+        const groupName =
+          extractGroupName(resolved.groupLabel, input.groupName) ||
+          input.groupName ||
+          resolved.groupId;
+        const webhookUrl = input.webhookUrl || WEBHOOK_URL;
+
+        resolvedTargets.push({
+          id: input.id || null,
+          groupId: resolved.groupId,
+          groupName,
+          groupLabel: resolved.groupLabel,
+          members: activeMembers,
+          webhookUrl
+        });
+
+        log(`Monitoring group:   ${resolved.groupLabel}`);
+        log(`Filtering members: ${memberLabels(activeMembers)}`);
+        log(`Google Sheet:      ${maskWebhookUrl(webhookUrl)}`);
+      } catch (err) {
+        log(`ERROR resolving "${input.groupName || input.groupId}":`, err.message);
+      }
     }
 
-    const memberLabel = memberLabels(activeMembers);
+    activeTargets = resolvedTargets;
+    if (!activeTargets.length) {
+      setupServer?.setReady('Connected, but no configurations could be resolved. Check groups and sheet URLs.');
+      return { monitoring: null };
+    }
 
-    log(`Monitoring group:   ${resolved.groupLabel}`);
-    log(`Filtering members: ${memberLabel}`);
-    log(`Webhook:           ${WEBHOOK_URL}`);
-
-    const monitoring = {
-      group: resolved.groupLabel,
-      member: memberLabel
-    };
+    const monitoring = buildMonitoringSummary();
     setupServer?.setMonitoring(monitoring);
-    setupServer?.setReady(`Connected. Monitoring ${memberLabel}.`);
+    const label =
+      activeTargets.length === 1
+        ? memberLabels(activeTargets[0].members)
+        : `${activeTargets.length} groups`;
+    setupServer?.setReady(`Connected. Monitoring ${label}.`);
     return { monitoring };
   } finally {
     applyTargetsInProgress = false;
@@ -864,64 +909,77 @@ client.on('disconnected', (reason) => {
   });
 });
 
-client.on('message', async (message) => {
-  try {
-    if (DISCOVERY_MODE) {
-      if (message.from?.endsWith('@g.us')) {
-        const senderId = message.author || message.from;
-        log('--- DISCOVERY ---');
-        log(`Group ID:   ${message.from}`);
-        log(`Sender:     ${message._data?.notifyName || 'Unknown'}`);
-        log(`User ID:    ${senderId}`);
-        log('-----------------');
-      }
-      return;
+async function handleIncomingMessage(message) {
+  if (DISCOVERY_MODE) {
+    if (message.from?.endsWith('@g.us')) {
+      const senderId = resolveMessageSenderId(message);
+      log('--- DISCOVERY ---');
+      log(`Group ID:   ${message.from}`);
+      log(`Sender:     ${message._data?.notifyName || 'Unknown'}`);
+      log(`User ID:    ${senderId || '(unknown)'}`);
+      log('-----------------');
     }
+    return;
+  }
 
-    if (!activeGroupId) return;
+  if (!activeTargets.length) return;
 
-    // 1. Group filter (no getChat — faster, fewer timeouts)
-    if (message.from !== activeGroupId) return;
+  const target = activeTargets.find((item) => item.groupId === message.from);
+  if (!target) return;
 
-    // 2. Member filter (by WhatsApp ID and/or display name)
-    const senderId = message.author || message.from;
-    const displayName = message._data?.notifyName || message._data?.notify_name || '';
-
-    if (!isAnyTargetMember(senderId, displayName, activeMembers)) {
-      log(`Skipped in ${activeGroupId}: "${displayName || 'Unknown'}" (${senderId})`);
-      return;
-    }
-
-    // 3. Deduplication
-    const msgId = message.id.id;
+  const msgId = message.id?.id;
+  if (msgId) {
     if (seenMessages.has(msgId)) return;
     seenMessages.add(msgId);
+  }
 
-    // 4. Build payload (with reply context when applicable)
-    let contact = null;
-    try {
-      contact = await message.getContact();
-    } catch {
-      log('Contact lookup skipped (using message name instead).');
-    }
-    const quotedInfo = await resolveQuotedInfo(message);
-    const payload = await buildPayload(message, contact, quotedInfo);
+  const senderId = resolveMessageSenderId(message);
+  const displayName = message._data?.notifyName || message._data?.notify_name || '';
 
-    // 5. Send to Google Sheets
-    const replyNote = payload.isReply === 'yes' ? ` (reply to ${payload.replyToSender || 'unknown'})` : '';
-    log(`Logging message from ${payload.sender}${replyNote}: ${payload.message.substring(0, 50)}...`);
-    const result = await sendToSheets(payload);
+  let contact = null;
+  try {
+    contact = await message.getContact();
+  } catch {
+    // use notifyName only
+  }
+
+  const senderLabel = contact?.pushname || contact?.name || displayName || senderId || 'Unknown';
+  const watching = memberLabels(target.members);
+  log(`Message in ${target.groupName} from "${senderLabel}" (watching: ${watching})`);
+
+  if (!isAnyTargetMember(senderId, displayName, target.members, contact)) {
+    log(`Skipped — sender is not a configured target person for ${target.groupName}.`);
     seenMessages.flush();
+    return;
+  }
 
-    if (result?.status === 'duplicate') {
-      log('Sheet reported duplicate, skipped.');
-    } else {
-      log('Message logged to Google Sheets.');
-    }
+  const quotedInfo = await resolveQuotedInfo(message);
+  const payload = await buildPayload(message, contact, quotedInfo, target);
+
+  const replyNote = payload.isReply === 'yes' ? ` (reply to ${payload.replyToSender || 'unknown'})` : '';
+  log(
+    `Logging message from ${payload.sender}${replyNote} → ${target.groupName}: ${payload.message.substring(0, 50)}...`
+  );
+  const result = await sendToSheets(payload, target.webhookUrl);
+  seenMessages.flush();
+
+  if (result?.status === 'duplicate') {
+    log('Sheet reported duplicate, skipped.');
+  } else {
+    log(`Message logged to Google Sheet (${maskWebhookUrl(target.webhookUrl)}).`);
+  }
+}
+
+async function onClientMessage(message) {
+  try {
+    await handleIncomingMessage(message);
   } catch (err) {
     log('Error processing message:', err.message);
   }
-});
+}
+
+client.on('message', onClientMessage);
+client.on('message_create', onClientMessage);
 
 validateConfig();
 

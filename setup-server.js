@@ -442,6 +442,86 @@ function renderPage({ token }) {
       color: #666;
       margin: 0.25rem 0 0;
     }
+    .portions-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+    .portions-toolbar .btn-secondary { margin-bottom: 0; }
+    #add-portion {
+      margin-left: auto;
+      background: #128c7e;
+      color: #fff;
+      border: none;
+    }
+    #add-portion:hover { background: #0d6b60; }
+    .portions-list {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }
+    .portion-card {
+      border: 1px solid #d8e0de;
+      border-radius: 10px;
+      padding: 1rem;
+      background: #f8fbfa;
+    }
+    .portion-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+    .portion-title {
+      margin: 0;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #128c7e;
+    }
+    .btn-remove-portion {
+      flex-shrink: 0;
+      padding: 0.3rem 0.65rem;
+      font-size: 0.8rem;
+      background: #fff;
+      color: #c00;
+      border: 1px solid #e0a0a0;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .btn-remove-portion:hover { background: #fff5f5; }
+    .webhook-input {
+      width: 100%;
+      padding: 0.5rem 0.6rem;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .webhook-hint {
+      font-size: 0.75rem;
+      color: #777;
+      margin: 0.35rem 0 0;
+    }
+    .portions-empty {
+      font-size: 0.85rem;
+      color: #888;
+      margin: 0 0 0.75rem;
+      padding: 0.75rem;
+      border: 1px dashed #ccc;
+      border-radius: 8px;
+      text-align: center;
+    }
+    #target-active {
+      font-size: 0.85rem;
+      color: #2a7;
+      margin-top: 0.5rem;
+    }
+    #target-active .active-line {
+      margin: 0.2rem 0;
+    }
     .logs-section {
       flex: 1;
       display: flex;
@@ -531,45 +611,22 @@ function renderPage({ token }) {
       </section>
 
       <section class="panel session-off" id="target-panel">
-    <h2>Target messages</h2>
-    <p class="session-hint" id="target-session-hint">Scan the QR code to log in, then configure targets here.</p>
-    <p id="target-source"></p>
-    <p style="font-size:0.85rem;color:#555;margin:0 0 0.75rem;">
-      Select a group, then add one or more members to monitor. Or type names manually.
-    </p>
-    <form id="target-form">
-      <div class="field">
-        <label>Group</label>
-        <div class="btn-row">
+        <h2>Configurations</h2>
+        <p class="session-hint" id="target-session-hint">Scan the QR code to log in, then add configurations here.</p>
+        <p id="target-source"></p>
+        <p style="font-size:0.85rem;color:#555;margin:0 0 0.75rem;">
+          Each portion logs messages from one group and member(s) to its own Google Sheet webhook.
+        </p>
+        <div class="portions-toolbar">
           <button type="button" class="btn-secondary" id="load-groups">Load my groups</button>
           <button type="button" class="btn-secondary" id="sync-groups">Sync from phone</button>
+          <button type="button" id="add-portion">+ Add</button>
         </div>
-        <div class="combo-wrap">
-          <input id="group-search" placeholder="Search groups…" autocomplete="off" />
-          <div id="group-list" class="combo-list" hidden></div>
-        </div>
-        <div class="pick-row" id="group-pick-row">
-          <p id="group-selected" class="selected-pill"></p>
-          <button type="button" class="btn-clear" id="clear-group" title="Remove group" aria-label="Remove group">×</button>
-        </div>
-        <input type="hidden" id="groupId" />
-        <input type="hidden" id="groupName" />
-      </div>
-      <div class="field">
-        <label>Members</label>
-        <button type="button" class="btn-secondary" id="load-members" disabled>Load members</button>
-        <div class="combo-wrap">
-          <input id="member-search" placeholder="Search members…" autocomplete="off" disabled />
-          <div id="member-list" class="combo-list" hidden></div>
-        </div>
-        <p class="member-hint">Click a name to add it. You can select more than one.</p>
-        <div id="member-chips" class="member-chips"></div>
-        <button type="button" class="btn-secondary" id="clear-member" style="margin-top:0.35rem;font-size:0.8rem;">Clear all members</button>
-      </div>
-      <button type="submit" id="save-targets">Save &amp; apply</button>
-      <p id="target-feedback"></p>
-      <p id="target-active"></p>
-    </form>
+        <div id="portions-list" class="portions-list"></div>
+        <p id="portions-empty" class="portions-empty">No configurations yet. Click <strong>+ Add</strong> to create one.</p>
+        <button type="button" id="save-targets">Save all &amp; apply</button>
+        <p id="target-feedback"></p>
+        <div id="target-active"></div>
       </section>
     </div>
 
@@ -622,59 +679,61 @@ function renderPage({ token }) {
     };
 
     let allGroups = [];
-    let allMembers = [];
-    let selectedMembers = [];
+    let portions = [];
+    let defaultWebhookUrl = '';
     let whatsAppReady = false;
+    let suppressPortionRender = false;
+
+    function newPortionId() {
+      return 'p-' + Date.now() + '-' + Math.random().toString(36).slice(2, 9);
+    }
 
     function memberKey(item) {
       return String(item.id || item.name || '').trim().toLowerCase();
     }
 
-    function renderMemberChips() {
-      const el = document.getElementById('member-chips');
-      el.innerHTML = '';
-      for (const member of selectedMembers) {
-        const chip = document.createElement('span');
-        chip.className = 'member-chip';
+    function getPortion(id) {
+      return portions.find((portion) => portion.id === id);
+    }
 
-        const label = document.createElement('span');
-        label.className = 'member-chip-label';
-        label.textContent = member.name;
+    function createPortion(partial = {}) {
+      return {
+        id: partial.id || newPortionId(),
+        groupId: partial.groupId || '',
+        groupName: partial.groupName || '',
+        members: Array.isArray(partial.members)
+          ? partial.members.map((member) => ({ name: member.name, id: member.id || '' }))
+          : [],
+        webhookUrl: partial.webhookUrl || '',
+        allMembers: []
+      };
+    }
 
-        const removeBtn = document.createElement('button');
-        removeBtn.type = 'button';
-        removeBtn.className = 'btn-clear';
-        removeBtn.title = 'Remove ' + member.name;
-        removeBtn.setAttribute('aria-label', 'Remove ' + member.name);
-        removeBtn.textContent = '×';
-        removeBtn.addEventListener('click', () => {
-          selectedMembers = selectedMembers.filter((item) => memberKey(item) !== memberKey(member));
-          renderMemberChips();
-        });
-
-        chip.appendChild(label);
-        chip.appendChild(removeBtn);
-        el.appendChild(chip);
+    function syncPortionFromCard(portion, card) {
+      portion.groupId = card.querySelector('.group-id').value.trim();
+      portion.groupName = card.querySelector('.group-name').value.trim()
+        || card.querySelector('.group-search').value.trim();
+      portion.webhookUrl = card.querySelector('.webhook-url').value.trim();
+      const typedMember = card.querySelector('.member-search').value.trim();
+      if (
+        typedMember &&
+        !portion.members.some((member) => member.name.toLowerCase() === typedMember.toLowerCase())
+      ) {
+        portion.members.push({ name: typedMember, id: '' });
+        card.querySelector('.member-search').value = '';
       }
     }
 
-    function addSelectedMember(item) {
-      if (selectedMembers.some((member) => memberKey(member) === memberKey(item))) {
-        document.getElementById('target-feedback').textContent = item.name + ' is already selected.';
-        document.getElementById('target-feedback').className = 'ok';
-        return;
+    function syncAllPortionsFromDom() {
+      for (const portion of portions) {
+        const card = document.querySelector('.portion-card[data-portion-id="' + portion.id + '"]');
+        if (card) syncPortionFromCard(portion, card);
       }
-      selectedMembers.push({ name: item.name, id: item.id || '' });
-      renderMemberChips();
-      document.getElementById('member-search').value = '';
-      document.getElementById('member-list').hidden = true;
-      document.getElementById('target-feedback').textContent = 'Added ' + item.name + '. Add more or click Save.';
-      document.getElementById('target-feedback').className = 'ok';
     }
 
     function isFormFocused() {
       const el = document.activeElement;
-      return el && (el.id === 'group-search' || el.id === 'member-search');
+      return el && (el.classList.contains('group-search') || el.classList.contains('member-search') || el.classList.contains('webhook-url'));
     }
 
     function setChip(el, text) {
@@ -686,88 +745,6 @@ function renderPage({ token }) {
       }
       el.textContent = text;
       if (row) row.classList.add('visible');
-    }
-
-    function hasActiveMonitoring() {
-      return !!document.getElementById('target-active').textContent.trim();
-    }
-
-    async function stopMonitoringOnServer() {
-      const res = await fetch('/setup/targets?token=' + encodeURIComponent(token), { method: 'DELETE' });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Failed to stop monitoring');
-      document.getElementById('target-active').textContent = '';
-      return data;
-    }
-
-    function clearMemberSelection() {
-      selectedMembers = [];
-      renderMemberChips();
-      document.getElementById('member-search').value = '';
-      document.getElementById('member-list').hidden = true;
-    }
-
-    async function clearGroupSelection({ stopMonitoring = true } = {}) {
-      const hadMonitoring = stopMonitoring && hasActiveMonitoring();
-      document.getElementById('groupId').value = '';
-      document.getElementById('groupName').value = '';
-      setChip(document.getElementById('group-selected'), '');
-      document.getElementById('group-search').value = '';
-      document.getElementById('group-list').hidden = true;
-      allMembers = [];
-      clearMemberSelection();
-      document.getElementById('load-members').disabled = true;
-      document.getElementById('member-search').disabled = true;
-      const feedback = document.getElementById('target-feedback');
-      if (hadMonitoring) {
-        try {
-          await stopMonitoringOnServer();
-          feedback.textContent = 'Group removed — monitoring stopped.';
-          feedback.className = 'ok';
-        } catch (err) {
-          feedback.textContent = err.message;
-          feedback.className = 'err';
-        }
-      } else {
-        feedback.textContent = 'Group removed.';
-        feedback.className = 'ok';
-      }
-    }
-
-    async function clearMemberOnly({ stopMonitoring = true } = {}) {
-      const hadMonitoring = stopMonitoring && hasActiveMonitoring();
-      clearMemberSelection();
-      const feedback = document.getElementById('target-feedback');
-      if (hadMonitoring) {
-        try {
-          await stopMonitoringOnServer();
-          feedback.textContent = 'Member removed — monitoring stopped.';
-          feedback.className = 'ok';
-        } catch (err) {
-          feedback.textContent = err.message;
-          feedback.className = 'err';
-        }
-      } else {
-        feedback.textContent = 'Member removed.';
-        feedback.className = 'ok';
-      }
-    }
-
-    function setSelection(kind, item) {
-      if (kind === 'group') {
-        document.getElementById('groupId').value = item.id;
-        document.getElementById('groupName').value = item.name;
-        setChip(document.getElementById('group-selected'), 'Selected: ' + item.name);
-        document.getElementById('group-search').value = '';
-        document.getElementById('group-list').hidden = true;
-        document.getElementById('load-members').disabled = false;
-        document.getElementById('member-search').disabled = false;
-        allMembers = [];
-        clearMemberSelection();
-        loadMembers();
-      } else {
-        addSelectedMember(item);
-      }
     }
 
     function renderComboList(listEl, items, onPick) {
@@ -793,14 +770,247 @@ function renderPage({ token }) {
       return items.filter((item) => item.name.toLowerCase().includes(q));
     }
 
+    function renderMemberChips(portion, card) {
+      const el = card.querySelector('.member-chips');
+      el.innerHTML = '';
+      for (const member of portion.members) {
+        const chip = document.createElement('span');
+        chip.className = 'member-chip';
+
+        const label = document.createElement('span');
+        label.className = 'member-chip-label';
+        label.textContent = member.name;
+
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'btn-clear';
+        removeBtn.title = 'Remove ' + member.name;
+        removeBtn.setAttribute('aria-label', 'Remove ' + member.name);
+        removeBtn.textContent = '×';
+        removeBtn.addEventListener('click', () => {
+          portion.members = portion.members.filter((item) => memberKey(item) !== memberKey(member));
+          renderMemberChips(portion, card);
+        });
+
+        chip.appendChild(label);
+        chip.appendChild(removeBtn);
+        el.appendChild(chip);
+      }
+    }
+
+    function addMemberToPortion(portion, card, item) {
+      if (portion.members.some((member) => memberKey(member) === memberKey(item))) {
+        setFeedback(item.name + ' is already selected in this configuration.', 'ok');
+        return;
+      }
+      portion.members.push({ name: item.name, id: item.id || '' });
+      renderMemberChips(portion, card);
+      card.querySelector('.member-search').value = '';
+      card.querySelector('.member-list').hidden = true;
+    }
+
+    function selectGroupForPortion(portion, card, item) {
+      portion.groupId = item.id;
+      portion.groupName = item.name;
+      portion.allMembers = [];
+      portion.members = [];
+      card.querySelector('.group-id').value = item.id;
+      card.querySelector('.group-name').value = item.name;
+      setChip(card.querySelector('.group-selected'), 'Selected: ' + item.name);
+      card.querySelector('.group-search').value = '';
+      card.querySelector('.group-list').hidden = true;
+      card.querySelector('.load-members').disabled = !whatsAppReady;
+      card.querySelector('.member-search').disabled = !whatsAppReady;
+      renderMemberChips(portion, card);
+      loadMembersForPortion(portion, card);
+    }
+
+    function clearGroupForPortion(portion, card) {
+      portion.groupId = '';
+      portion.groupName = '';
+      portion.allMembers = [];
+      portion.members = [];
+      card.querySelector('.group-id').value = '';
+      card.querySelector('.group-name').value = '';
+      setChip(card.querySelector('.group-selected'), '');
+      card.querySelector('.group-search').value = '';
+      card.querySelector('.group-list').hidden = true;
+      card.querySelector('.load-members').disabled = true;
+      card.querySelector('.member-search').disabled = true;
+      card.querySelector('.member-search').value = '';
+      card.querySelector('.member-list').hidden = true;
+      renderMemberChips(portion, card);
+    }
+
+    function buildPortionCard(portion, index) {
+      const card = document.createElement('div');
+      card.className = 'portion-card';
+      card.dataset.portionId = portion.id;
+
+      const header = document.createElement('div');
+      header.className = 'portion-header';
+      const title = document.createElement('h3');
+      title.className = 'portion-title';
+      title.textContent = 'Configuration ' + (index + 1);
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'btn-remove-portion';
+      removeBtn.textContent = 'Remove';
+      removeBtn.addEventListener('click', () => removePortion(portion.id));
+      header.appendChild(title);
+      header.appendChild(removeBtn);
+      card.appendChild(header);
+
+      const groupField = document.createElement('div');
+      groupField.className = 'field';
+      groupField.innerHTML =
+        '<label>WhatsApp group</label>' +
+        '<div class="combo-wrap">' +
+        '<input class="group-search" placeholder="Search groups…" autocomplete="off" />' +
+        '<div class="combo-list group-list" hidden></div></div>' +
+        '<div class="pick-row">' +
+        '<p class="selected-pill group-selected"></p>' +
+        '<button type="button" class="btn-clear clear-group" title="Remove group" aria-label="Remove group">×</button>' +
+        '</div>' +
+        '<input type="hidden" class="group-id" />' +
+        '<input type="hidden" class="group-name" />';
+      card.appendChild(groupField);
+
+      const memberField = document.createElement('div');
+      memberField.className = 'field';
+      memberField.innerHTML =
+        '<label>Target person(s)</label>' +
+        '<button type="button" class="btn-secondary load-members" disabled>Load members</button>' +
+        '<div class="combo-wrap">' +
+        '<input class="member-search" placeholder="Search members…" autocomplete="off" disabled />' +
+        '<div class="combo-list member-list" hidden></div></div>' +
+        '<p class="member-hint">Click a name to add it. You can select more than one.</p>' +
+        '<div class="member-chips"></div>' +
+        '<button type="button" class="btn-secondary clear-members" style="margin-top:0.35rem;font-size:0.8rem;">Clear all members</button>';
+      card.appendChild(memberField);
+
+      const webhookField = document.createElement('div');
+      webhookField.className = 'field';
+      const webhookLabel = document.createElement('label');
+      webhookLabel.textContent = 'Google Sheets webhook URL';
+      const webhookInput = document.createElement('input');
+      webhookInput.type = 'url';
+      webhookInput.className = 'webhook-url webhook-input';
+      webhookInput.placeholder = defaultWebhookUrl || 'https://script.google.com/macros/s/.../exec';
+      webhookInput.value = portion.webhookUrl || '';
+      webhookInput.addEventListener('input', () => {
+        portion.webhookUrl = webhookInput.value.trim();
+      });
+      const webhookHint = document.createElement('p');
+      webhookHint.className = 'webhook-hint';
+      webhookHint.textContent = defaultWebhookUrl
+        ? 'Leave blank to use the default from .env (WEBHOOK_URL).'
+        : 'Paste your Apps Script web app URL for this sheet.';
+      webhookField.appendChild(webhookLabel);
+      webhookField.appendChild(webhookInput);
+      webhookField.appendChild(webhookHint);
+      card.appendChild(webhookField);
+
+      if (portion.groupId) card.querySelector('.group-id').value = portion.groupId;
+      if (portion.groupName) {
+        card.querySelector('.group-name').value = portion.groupName;
+        setChip(card.querySelector('.group-selected'), 'Selected: ' + portion.groupName);
+        card.querySelector('.load-members').disabled = !whatsAppReady;
+        card.querySelector('.member-search').disabled = !whatsAppReady;
+      }
+      renderMemberChips(portion, card);
+
+      const groupSearch = card.querySelector('.group-search');
+      const groupList = card.querySelector('.group-list');
+      groupSearch.addEventListener('input', (e) => {
+        renderComboList(groupList, filterItems(allGroups, e.target.value), (item) =>
+          selectGroupForPortion(portion, card, item)
+        );
+      });
+      groupSearch.addEventListener('focus', () => {
+        if (allGroups.length) {
+          renderComboList(groupList, filterItems(allGroups, groupSearch.value), (item) =>
+            selectGroupForPortion(portion, card, item)
+          );
+        }
+      });
+
+      const memberSearch = card.querySelector('.member-search');
+      const memberList = card.querySelector('.member-list');
+      memberSearch.addEventListener('input', (e) => {
+        renderComboList(memberList, filterItems(portion.allMembers, e.target.value), (item) =>
+          addMemberToPortion(portion, card, item)
+        );
+      });
+      memberSearch.addEventListener('focus', () => {
+        if (portion.allMembers.length) {
+          renderComboList(memberList, filterItems(portion.allMembers, memberSearch.value), (item) =>
+            addMemberToPortion(portion, card, item)
+          );
+        }
+      });
+
+      card.querySelector('.load-members').addEventListener('click', () => loadMembersForPortion(portion, card));
+      card.querySelector('.clear-group').addEventListener('click', () => clearGroupForPortion(portion, card));
+      card.querySelector('.clear-members').addEventListener('click', () => {
+        portion.members = [];
+        renderMemberChips(portion, card);
+      });
+
+      return card;
+    }
+
+    function renderPortions() {
+      if (suppressPortionRender) return;
+      const list = document.getElementById('portions-list');
+      list.innerHTML = '';
+      portions.forEach((portion, index) => {
+        list.appendChild(buildPortionCard(portion, index));
+      });
+      document.getElementById('portions-empty').hidden = portions.length > 0;
+    }
+
+    function addPortion(partial = {}) {
+      syncAllPortionsFromDom();
+      portions.push(createPortion(partial));
+      renderPortions();
+    }
+
+    function removePortion(id) {
+      syncAllPortionsFromDom();
+      portions = portions.filter((portion) => portion.id !== id);
+      renderPortions();
+      if (!portions.length) {
+        document.getElementById('target-active').innerHTML = '';
+      }
+    }
+
+    function setFeedback(text, cls) {
+      const feedback = document.getElementById('target-feedback');
+      feedback.textContent = text;
+      feedback.className = cls || '';
+    }
+
+    function renderMonitoring(monitoring) {
+      const el = document.getElementById('target-active');
+      if (!monitoring || !monitoring.length) {
+        el.innerHTML = '';
+        return;
+      }
+      const lines = monitoring.map((item, index) => {
+        const sheet = item.sheet ? ' → ' + item.sheet : '';
+        return '<p class="active-line">' + (index + 1) + '. ' + item.group + ' → ' + item.member + sheet + '</p>';
+      });
+      el.innerHTML = '<p style="font-weight:600;margin:0 0 0.25rem;">Active:</p>' + lines.join('');
+    }
+
     async function loadGroups({ refresh = false } = {}) {
       const btn = document.getElementById('load-groups');
       if (btn.disabled) return;
       btn.disabled = true;
       document.getElementById('sync-groups').disabled = true;
       btn.textContent = 'Loading groups…';
-      document.getElementById('target-feedback').textContent = 'Loading groups (usually a few seconds)…';
-      document.getElementById('target-feedback').className = '';
+      setFeedback('Loading groups (usually a few seconds)…', '');
       try {
         const refreshParam = refresh ? '&refresh=1' : '';
         const res = await fetch('/setup/groups?token=' + encodeURIComponent(token) + refreshParam);
@@ -808,19 +1018,14 @@ function renderPage({ token }) {
         if (!res.ok) throw new Error(data.error || 'Failed to load groups');
         if (!data.ready) throw new Error('Connect WhatsApp first (scan QR above).');
         allGroups = data.groups || [];
-        document.getElementById('target-feedback').textContent =
+        setFeedback(
           allGroups.length
-            ? 'Found ' + allGroups.length + ' group(s). Search and select one.'
-            : 'No groups found.';
-        document.getElementById('target-feedback').className = 'ok';
-        renderComboList(
-          document.getElementById('group-list'),
-          filterItems(allGroups, document.getElementById('group-search').value),
-          (item) => setSelection('group', item)
+            ? 'Found ' + allGroups.length + ' group(s). Pick a group in each configuration.'
+            : 'No groups found.',
+          'ok'
         );
       } catch (err) {
-        document.getElementById('target-feedback').textContent = err.message;
-        document.getElementById('target-feedback').className = 'err';
+        setFeedback(err.message, 'err');
       } finally {
         btn.disabled = !whatsAppReady;
         document.getElementById('sync-groups').disabled = !whatsAppReady;
@@ -834,19 +1039,15 @@ function renderPage({ token }) {
       btn.disabled = true;
       document.getElementById('load-groups').disabled = true;
       btn.textContent = 'Syncing…';
-      document.getElementById('target-feedback').textContent =
-        'Syncing from WhatsApp on your phone (~10 seconds). New groups appear after this.';
-      document.getElementById('target-feedback').className = '';
+      setFeedback('Syncing from WhatsApp on your phone (~10 seconds). New groups appear after this.', '');
       try {
         const res = await fetch('/setup/sync?token=' + encodeURIComponent(token), { method: 'POST' });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Sync failed');
-        document.getElementById('target-feedback').textContent = 'Sync done. Loading groups…';
-        document.getElementById('target-feedback').className = 'ok';
+        setFeedback('Sync done. Loading groups…', 'ok');
         await loadGroups({ refresh: true });
       } catch (err) {
-        document.getElementById('target-feedback').textContent = err.message;
-        document.getElementById('target-feedback').className = 'err';
+        setFeedback(err.message, 'err');
       } finally {
         btn.disabled = !whatsAppReady;
         document.getElementById('load-groups').disabled = !whatsAppReady;
@@ -854,15 +1055,14 @@ function renderPage({ token }) {
       }
     }
 
-    async function loadMembers({ refresh = false } = {}) {
-      const groupId = document.getElementById('groupId').value;
+    async function loadMembersForPortion(portion, card, { refresh = false } = {}) {
+      const groupId = portion.groupId || card.querySelector('.group-id').value;
       if (!groupId) return;
-      const btn = document.getElementById('load-members');
-      if (btn.disabled) return;
+      const btn = card.querySelector('.load-members');
+      if (btn.disabled && !refresh) return;
       btn.disabled = true;
       btn.textContent = 'Loading members…';
-      document.getElementById('target-feedback').textContent = 'Loading members (usually a few seconds)…';
-      document.getElementById('target-feedback').className = '';
+      setFeedback('Loading members (usually a few seconds)…', '');
       try {
         const refreshParam = refresh ? '&refresh=1' : '';
         const res = await fetch(
@@ -870,140 +1070,68 @@ function renderPage({ token }) {
         );
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Failed to load members');
-        allMembers = data.members || [];
-        document.getElementById('target-feedback').textContent =
-          allMembers.length
-            ? 'Found ' + allMembers.length + ' member(s). Search and click to add.'
-            : 'No members found.';
-        document.getElementById('target-feedback').className = 'ok';
+        portion.allMembers = data.members || [];
+        setFeedback(
+          portion.allMembers.length
+            ? 'Found ' + portion.allMembers.length + ' member(s). Search and click to add.'
+            : 'No members found.',
+          'ok'
+        );
         renderComboList(
-          document.getElementById('member-list'),
-          filterItems(allMembers, document.getElementById('member-search').value),
-          (item) => setSelection('member', item)
+          card.querySelector('.member-list'),
+          filterItems(portion.allMembers, card.querySelector('.member-search').value),
+          (item) => addMemberToPortion(portion, card, item)
         );
       } catch (err) {
-        document.getElementById('target-feedback').textContent = err.message;
-        document.getElementById('target-feedback').className = 'err';
+        setFeedback(err.message, 'err');
       } finally {
         btn.disabled = !whatsAppReady || !groupId;
-        btn.textContent = allMembers.length ? 'Refresh members' : 'Load members';
+        btn.textContent = portion.allMembers.length ? 'Refresh members' : 'Load members';
       }
     }
 
     document.getElementById('load-groups').addEventListener('click', () => loadGroups());
     document.getElementById('sync-groups').addEventListener('click', syncGroups);
-    document.getElementById('load-members').addEventListener('click', () => loadMembers());
-    document.getElementById('clear-group').addEventListener('click', () => clearGroupSelection());
-    document.getElementById('clear-member').addEventListener('click', () => clearMemberOnly());
-
-    document.getElementById('group-search').addEventListener('input', (e) => {
-      renderComboList(
-        document.getElementById('group-list'),
-        filterItems(allGroups, e.target.value),
-        (item) => setSelection('group', item)
-      );
-    });
-    document.getElementById('group-search').addEventListener('focus', () => {
-      if (allGroups.length) {
-        renderComboList(
-          document.getElementById('group-list'),
-          filterItems(allGroups, document.getElementById('group-search').value),
-          (item) => setSelection('group', item)
-        );
-      }
-    });
-
-    document.getElementById('member-search').addEventListener('input', (e) => {
-      renderComboList(
-        document.getElementById('member-list'),
-        filterItems(allMembers, e.target.value),
-        (item) => setSelection('member', item)
-      );
-    });
-    document.getElementById('member-search').addEventListener('focus', () => {
-      if (allMembers.length) {
-        renderComboList(
-          document.getElementById('member-list'),
-          filterItems(allMembers, document.getElementById('member-search').value),
-          (item) => setSelection('member', item)
-        );
-      }
-    });
+    document.getElementById('add-portion').addEventListener('click', () => addPortion());
 
     document.addEventListener('click', (e) => {
       if (!e.target.closest('.combo-wrap')) {
-        document.getElementById('group-list').hidden = true;
-        document.getElementById('member-list').hidden = true;
+        document.querySelectorAll('.combo-list').forEach((list) => {
+          list.hidden = true;
+        });
       }
     });
 
     function clearTargetForm() {
-      document.getElementById('groupName').value = '';
-      document.getElementById('groupId').value = '';
-      setChip(document.getElementById('group-selected'), '');
-      clearMemberSelection();
-      document.getElementById('target-active').textContent = '';
-      document.getElementById('target-feedback').textContent = '';
-      document.getElementById('target-feedback').className = '';
-      document.getElementById('group-search').value = '';
-      document.getElementById('member-search').value = '';
-      document.getElementById('group-list').hidden = true;
-      document.getElementById('member-list').hidden = true;
+      portions = [];
+      renderPortions();
+      document.getElementById('target-active').innerHTML = '';
+      setFeedback('', '');
       document.getElementById('load-groups').textContent = 'Load my groups';
-      document.getElementById('load-members').textContent = 'Load members';
-      document.getElementById('load-members').disabled = true;
-      document.getElementById('member-search').disabled = true;
       document.getElementById('load-groups').disabled = true;
       document.getElementById('sync-groups').disabled = true;
       document.getElementById('target-source').textContent =
-        'Scan QR, then load groups and pick a member.';
+        'Scan QR, then load groups and add configurations.';
       allGroups = [];
-      allMembers = [];
       initialPoll = true;
     }
 
     function applyTargetData(data, { updateFields = true } = {}) {
+      if (data.defaultWebhookUrl) defaultWebhookUrl = data.defaultWebhookUrl;
       if (updateFields && !isFormFocused()) {
-        if (data.groupName) {
-          document.getElementById('groupName').value = data.groupName;
-          setChip(document.getElementById('group-selected'), 'Selected: ' + data.groupName);
-        } else {
-          document.getElementById('groupName').value = '';
-          setChip(document.getElementById('group-selected'), '');
-        }
-        if (data.groupId) {
-          document.getElementById('groupId').value = data.groupId;
-          document.getElementById('load-members').disabled = !whatsAppReady;
-          document.getElementById('member-search').disabled = !whatsAppReady;
-        } else {
-          document.getElementById('groupId').value = '';
-          document.getElementById('load-members').disabled = true;
-          document.getElementById('member-search').disabled = true;
-        }
-        if (Array.isArray(data.members) && data.members.length) {
-          selectedMembers = data.members.map((member) => ({
-            name: member.name,
-            id: member.id || ''
-          }));
-        } else if (data.memberName) {
-          selectedMembers = [{ name: data.memberName, id: data.memberId || '' }];
-        } else {
-          selectedMembers = [];
-        }
-        renderMemberChips();
+        suppressPortionRender = true;
+        const incoming = Array.isArray(data.targets) ? data.targets : [];
+        portions = incoming.map((target) => createPortion(target));
+        suppressPortionRender = false;
+        renderPortions();
       }
       const sourceEl = document.getElementById('target-source');
       if (data.source) {
         sourceEl.textContent = sourceLabels[data.source] || '';
-      } else if (!data.monitoring) {
-        sourceEl.textContent = 'Scan QR, then load groups and pick a member.';
+      } else if (!data.monitoring?.length) {
+        sourceEl.textContent = 'Scan QR, then load groups and add configurations.';
       }
-      if (data.monitoring) {
-        document.getElementById('target-active').textContent =
-          'Active: ' + data.monitoring.group + ' → ' + data.monitoring.member;
-      } else {
-        document.getElementById('target-active').textContent = '';
-      }
+      renderMonitoring(data.monitoring);
     }
 
     async function loadTargets({ updateFields = true } = {}) {
@@ -1012,56 +1140,45 @@ function renderPage({ token }) {
       applyTargetData(await res.json(), { updateFields });
     }
 
-    document.getElementById('target-form').addEventListener('submit', async (e) => {
-      e.preventDefault();
+    document.getElementById('save-targets').addEventListener('click', async () => {
       if (!whatsAppReady) {
-        document.getElementById('target-feedback').textContent = 'Connect WhatsApp first (scan QR above).';
-        document.getElementById('target-feedback').className = 'err';
+        setFeedback('Connect WhatsApp first (scan QR above).', 'err');
         return;
       }
+      syncAllPortionsFromDom();
       const btn = document.getElementById('save-targets');
-      const feedback = document.getElementById('target-feedback');
-      const groupName = document.getElementById('groupName').value.trim()
-        || document.getElementById('group-search').value.trim();
-      const groupId = document.getElementById('groupId').value.trim();
-      const members = selectedMembers.map((member) => ({
-        name: member.name,
-        id: member.id || ''
-      }));
-      const typedMember = document.getElementById('member-search').value.trim();
-      if (
-        typedMember &&
-        !members.some((member) => member.name.toLowerCase() === typedMember.toLowerCase())
-      ) {
-        members.push({ name: typedMember, id: '' });
-      }
-      if (!groupName || !members.length) {
-        feedback.textContent = 'Select a group and at least one member.';
-        feedback.className = 'err';
+      if (!portions.length) {
+        setFeedback('Add at least one configuration.', 'err');
         return;
+      }
+      const payload = portions.map((portion) => ({
+        id: portion.id,
+        groupName: portion.groupName,
+        groupId: portion.groupId,
+        members: portion.members.map((member) => ({ name: member.name, id: member.id || '' })),
+        webhookUrl: portion.webhookUrl || ''
+      }));
+      for (let i = 0; i < payload.length; i++) {
+        if (!payload[i].groupName || !payload[i].members.length) {
+          setFeedback('Configuration ' + (i + 1) + ' needs a group and at least one member.', 'err');
+          return;
+        }
       }
       btn.disabled = true;
-      feedback.textContent = 'Saving...';
-      feedback.className = '';
-
+      setFeedback('Saving...', '');
       try {
         const res = await fetch('/setup/targets?token=' + encodeURIComponent(token), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ groupName, groupId, members })
+          body: JSON.stringify({ targets: payload })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Save failed');
-        feedback.textContent = data.warning || 'Saved. Monitoring updated.';
-        feedback.className = data.warning ? 'err' : 'ok';
-        if (data.monitoring) {
-          document.getElementById('target-active').textContent =
-            'Active: ' + data.monitoring.group + ' → ' + data.monitoring.member;
-        }
+        setFeedback(data.warning || 'Saved. Monitoring updated.', data.warning ? 'err' : 'ok');
+        renderMonitoring(data.monitoring);
         await loadTargets({ updateFields: true });
       } catch (err) {
-        feedback.textContent = err.message;
-        feedback.className = 'err';
+        setFeedback(err.message, 'err');
       } finally {
         btn.disabled = false;
       }
@@ -1080,11 +1197,10 @@ function renderPage({ token }) {
       pollTimer = setInterval(() => tick(), ms);
     }
     const emptyTargets = {
-      groupName: '',
-      groupId: '',
-      members: [],
+      targets: [],
       source: null,
-      monitoring: null
+      monitoring: null,
+      defaultWebhookUrl: ''
     };
 
     function setQrSkeleton(visible) {
@@ -1335,9 +1451,14 @@ function renderPage({ token }) {
       if (ready) {
         status = 'ready';
         if (!message || /finishing|syncing|authenticated/i.test(message)) {
-          message = data.monitoring
-            ? 'Connected. Monitoring ' + data.monitoring.member + '.'
-            : 'Connected. Set targets below if needed.';
+          if (Array.isArray(data.monitoring) && data.monitoring.length) {
+            message =
+              data.monitoring.length === 1
+                ? 'Connected. Monitoring ' + data.monitoring[0].member + '.'
+                : 'Connected. Monitoring ' + data.monitoring.length + ' groups.';
+          } else {
+            message = 'Connected. Add configurations below if needed.';
+          }
         }
       }
       return Object.assign({}, data, { ready, status, message });
@@ -1447,7 +1568,7 @@ function createSetupServer({
   token,
   serverIp,
   getTargets,
-  onSaveTargets,
+  onSaveAllTargets,
   onClearTargets,
   onLogout,
   onListGroups,
@@ -1455,6 +1576,7 @@ function createSetupServer({
   onSyncCatalog,
   isWhatsAppReady,
   getWhatsAppUser,
+  getDefaultWebhookUrl,
   onPollSync
 }) {
   let currentQr = null;
@@ -1503,9 +1625,14 @@ function createSetupServer({
       !statusMessage ||
       /finishing|syncing|authenticated|scan/i.test(statusMessage)
     ) {
-      statusMessage = monitoring
-        ? `Connected. Monitoring ${monitoring.member}.`
-        : 'Connected. Set targets below if needed.';
+      if (Array.isArray(monitoring) && monitoring.length) {
+        statusMessage =
+          monitoring.length === 1
+            ? `Connected. Monitoring ${monitoring[0].member}.`
+            : `Connected. Monitoring ${monitoring.length} groups.`;
+      } else {
+        statusMessage = 'Connected. Add configurations below if needed.';
+      }
     }
   }
 
@@ -1525,25 +1652,29 @@ function createSetupServer({
   }
 
   function buildTargetsResponse() {
+    const defaultWebhookUrl = getDefaultWebhookUrl ? getDefaultWebhookUrl() : '';
     if (!isWhatsAppConnected()) {
       return {
-        groupName: '',
-        groupId: '',
-        members: [],
+        targets: [],
         source: null,
-        monitoring: null
+        monitoring: null,
+        defaultWebhookUrl
       };
     }
 
-    const targets = getTargets ? getTargets() : null;
-    const members = targets?.members || [];
+    const effective = getTargets ? getTargets() : null;
+    const targets = effective?.targets || [];
     return {
-      groupName: targets?.groupName || '',
-      groupId: targets?.groupId || '',
-      members,
-      memberName: memberLabels(members),
-      source: targets?.source || null,
-      monitoring
+      targets: targets.map((target) => ({
+        id: target.id || '',
+        groupName: target.groupName || '',
+        groupId: target.groupId || '',
+        members: target.members || [],
+        webhookUrl: target.webhookUrl || ''
+      })),
+      source: effective?.source || null,
+      monitoring,
+      defaultWebhookUrl
     };
   }
 
@@ -1655,30 +1786,45 @@ function createSetupServer({
       return res.status(503).json({ error: 'Connect WhatsApp first (scan QR above).' });
     }
 
-    const groupName = req.body?.groupName?.trim();
-    const groupId = req.body?.groupId?.trim() || '';
-    const members = normalizeMembers(
-      req.body?.members,
-      req.body?.memberName,
-      req.body?.memberId
-    );
-
-    if (!groupName || !members.length) {
-      return res.status(400).json({ error: 'Group and at least one member are required.' });
+    const rawTargets = req.body?.targets;
+    if (!Array.isArray(rawTargets) || !rawTargets.length) {
+      return res.status(400).json({ error: 'Add at least one configuration with a group and member(s).' });
     }
 
-    if (!onSaveTargets) {
+    const targets = rawTargets
+      .map((entry) => {
+        const groupName = entry?.groupName?.trim();
+        const groupId = entry?.groupId?.trim() || '';
+        const members = normalizeMembers(entry?.members, entry?.memberName, entry?.memberId);
+        const webhookUrl = entry?.webhookUrl?.trim() || '';
+        const id = entry?.id?.trim() || '';
+        if (!groupName || !members.length) return null;
+        return {
+          id: id || undefined,
+          groupName,
+          groupId,
+          members,
+          webhookUrl: webhookUrl || null
+        };
+      })
+      .filter(Boolean);
+
+    if (!targets.length) {
+      return res.status(400).json({ error: 'Each configuration needs a group and at least one member.' });
+    }
+
+    if (!onSaveAllTargets) {
       return res.status(503).json({ error: 'Target saving is not configured.' });
     }
 
     try {
-      const result = await onSaveTargets(groupName, groupId, members);
+      const result = await onSaveAllTargets(targets);
+      if (result?.monitoring) {
+        monitoring = result.monitoring;
+      }
       res.json({
         ok: true,
-        groupName,
-        groupId,
-        members,
-        memberName: memberLabels(members),
+        targets: result?.targets || targets,
         warning: result?.warning || null,
         monitoring: result?.monitoring || monitoring
       });
@@ -1819,7 +1965,7 @@ function createSetupServer({
       currentQr = null;
       qrUpdatedAt = null;
       status = 'ready';
-      statusMessage = 'Connected. Enter group and member name below, then Save.';
+      statusMessage = 'Connected. Add a configuration below, then Save all & apply.';
       loadPercent = null;
     },
     setError(message) {

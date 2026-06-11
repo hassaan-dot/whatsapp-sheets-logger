@@ -17,22 +17,6 @@ function senderIdsMatch(senderId, targetId) {
   return Boolean(senderUser && targetUser && senderUser === targetUser);
 }
 
-function isTargetMember(senderId, displayName, { memberId, memberName }) {
-  if (memberId && senderIdsMatch(senderId, memberId)) return true;
-  if (memberName && namesMatch(displayName, memberName)) return true;
-  return false;
-}
-
-function isAnyTargetMember(senderId, displayName, members) {
-  if (!members?.length) return false;
-  return members.some((member) =>
-    isTargetMember(senderId, displayName, {
-      memberId: member.id || member.memberId,
-      memberName: member.name || member.memberName
-    })
-  );
-}
-
 function contactDisplayName(contact) {
   return (
     contact?.pushname ||
@@ -42,6 +26,36 @@ function contactDisplayName(contact) {
     contact?.formattedName ||
     contact?.number ||
     ''
+  );
+}
+
+function collectSenderNames(displayName, contact) {
+  const names = [];
+  for (const value of [displayName, contactDisplayName(contact)]) {
+    const name = String(value || '').trim();
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
+function isTargetMember(senderId, displayName, { memberId, memberName }, contact = null) {
+  if (memberId && senderIdsMatch(senderId, memberId)) return true;
+  if (!memberName) return false;
+  return collectSenderNames(displayName, contact).some((name) => namesMatch(name, memberName));
+}
+
+function isAnyTargetMember(senderId, displayName, members, contact = null) {
+  if (!members?.length) return false;
+  return members.some((member) =>
+    isTargetMember(
+      senderId,
+      displayName,
+      {
+        memberId: member.id || member.memberId,
+        memberName: member.name || member.memberName
+      },
+      contact
+    )
   );
 }
 
