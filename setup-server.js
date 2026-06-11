@@ -1,6 +1,10 @@
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
 const QRCode = require('qrcode');
 const { normalizeMembers, memberLabels } = require('./target-config');
+
+const APPS_SCRIPT_PATH = path.join(__dirname, 'google-apps-script', 'Code.gs');
 
 const MAX_LOG_LINES = 500;
 const QR_EXPIRY_MS = 50000;
@@ -522,6 +526,40 @@ function renderPage({ token }) {
     #target-active .active-line {
       margin: 0.2rem 0;
     }
+    .sheet-setup-guide {
+      margin: 0 0 1rem;
+      border: 1px solid #b8e0db;
+      border-radius: 10px;
+      background: #f3faf8;
+      overflow: hidden;
+    }
+    .sheet-setup-guide summary {
+      cursor: pointer;
+      padding: 0.65rem 0.85rem;
+      font-weight: 600;
+      font-size: 0.9rem;
+      color: #0d6b60;
+      list-style: none;
+    }
+    .sheet-setup-guide summary::-webkit-details-marker { display: none; }
+    .sheet-setup-body {
+      padding: 0 0.85rem 0.85rem;
+      font-size: 0.82rem;
+      color: #444;
+      line-height: 1.5;
+    }
+    .sheet-setup-body ol {
+      margin: 0.5rem 0 0.75rem 1.1rem;
+      padding: 0;
+    }
+    .sheet-setup-body li { margin-bottom: 0.45rem; }
+    .sheet-setup-body strong { color: #1a4d45; }
+    .sheet-setup-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 0.5rem;
+    }
     .logs-section {
       flex: 1;
       display: flex;
@@ -615,8 +653,28 @@ function renderPage({ token }) {
         <p class="session-hint" id="target-session-hint">Scan the QR code to log in, then add configurations here.</p>
         <p id="target-source"></p>
         <p style="font-size:0.85rem;color:#555;margin:0 0 0.75rem;">
-          Each portion logs messages from one group and member(s) to its own Google Sheet webhook.
+          Each configuration logs one group + member(s) to its own Google Sheet. One sheet per group is recommended.
         </p>
+        <details class="sheet-setup-guide" id="sheet-setup-guide">
+          <summary>First time? How to connect a Google Sheet (6 steps)</summary>
+          <div class="sheet-setup-body">
+            <ol>
+              <li><strong>Create a Google Sheet</strong> — go to <a href="https://sheets.google.com" target="_blank" rel="noopener">sheets.google.com</a> → Blank spreadsheet. Name it (e.g. “WhatsApp – Test group”).</li>
+              <li><strong>Open Apps Script</strong> — in that sheet: <strong>Extensions → Apps Script</strong>.</li>
+              <li><strong>Paste our script</strong> — delete any code in the editor, click <strong>Copy script</strong> below, paste, then <strong>Save</strong> (disk icon).</li>
+              <li><strong>Run once</strong> — in the function dropdown choose <strong>setupSheetHeaders</strong> → click <strong>Run</strong> (▶) → allow permissions. Row 1 gets column headers.</li>
+              <li><strong>Deploy</strong> — <strong>Deploy → New deployment</strong> → type <strong>Web app</strong> → Execute as: <strong>Me</strong> → Who has access: <strong>Anyone</strong> → Deploy → copy the <strong>Web app URL</strong> (ends in <code>/exec</code>).</li>
+              <li><strong>Paste in this page</strong> — click <strong>+ Add</strong>, pick group and member, paste the URL into <strong>Google Sheets webhook URL</strong>, then <strong>Save all &amp; apply</strong>.</li>
+            </ol>
+            <p style="margin:0.35rem 0 0;font-size:0.78rem;color:#666;">
+              Test the URL in a browser: you should see “WhatsApp Sheets Logger webhook is running.” If you see a Google sign-in page, redeploy with <strong>Anyone</strong> (not “Anyone with Google account”).
+            </p>
+            <div class="sheet-setup-actions">
+              <button type="button" class="btn-secondary" id="copy-apps-script">Copy script</button>
+              <span id="copy-script-feedback" style="font-size:0.8rem;color:#128c7e;"></span>
+            </div>
+          </div>
+        </details>
         <div class="portions-toolbar">
           <button type="button" class="btn-secondary" id="load-groups">Load my groups</button>
           <button type="button" class="btn-secondary" id="sync-groups">Sync from phone</button>
@@ -1093,6 +1151,23 @@ function renderPage({ token }) {
     document.getElementById('load-groups').addEventListener('click', () => loadGroups());
     document.getElementById('sync-groups').addEventListener('click', syncGroups);
     document.getElementById('add-portion').addEventListener('click', () => addPortion());
+
+    document.getElementById('copy-apps-script').addEventListener('click', async () => {
+      const feedback = document.getElementById('copy-script-feedback');
+      feedback.textContent = 'Loading…';
+      feedback.className = '';
+      try {
+        const res = await fetch('/setup/script?token=' + encodeURIComponent(token));
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not load script');
+        await navigator.clipboard.writeText(data.script);
+        feedback.textContent = 'Script copied — paste it in Apps Script (step 3).';
+        feedback.className = 'ok';
+      } catch (err) {
+        feedback.textContent = err.message;
+        feedback.className = 'err';
+      }
+    });
 
     document.addEventListener('click', (e) => {
       if (!e.target.closest('.combo-wrap')) {
@@ -1761,6 +1836,18 @@ function createSetupServer({
       res.json({ members });
     } catch (err) {
       res.status(500).json({ error: err.message, members: [] });
+    }
+  });
+
+  app.get('/setup/script', checkToken, (req, res) => {
+    try {
+      if (!fs.existsSync(APPS_SCRIPT_PATH)) {
+        return res.status(404).json({ error: 'Apps Script file not found on server.' });
+      }
+      const script = fs.readFileSync(APPS_SCRIPT_PATH, 'utf8');
+      res.json({ script });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
     }
   });
 

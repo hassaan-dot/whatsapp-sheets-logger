@@ -15,16 +15,19 @@ Free automation that monitors a WhatsApp group, logs messages from one specific 
 
 ## Quick start
 
-### 1. Google Sheet setup
+### 1. Google Sheet setup (each new group)
 
-1. Create a new Google Sheet (empty **Sheet1** is fine).
-2. Go to **Extensions → Apps Script**.
-3. Paste the contents of `google-apps-script/Code.gs` and **Save**.
-4. **Auto-write column headers:** in the function dropdown at the top, choose **`setupSheetHeaders`**, then click **Run** (▶). Approve permissions when asked — row 1 is filled with all 19 columns automatically (green header row).
-5. **Deploy → New deployment → Web app**
-   - Execute as: **Me**
-   - Who has access: **Anyone**
-6. Copy the deployment URL.
+Full guide: **[docs/google-sheet-setup.md](docs/google-sheet-setup.md)**  
+On the setup page (`/setup?token=...`), expand **“First time? How to connect a Google Sheet”** and use **Copy script**.
+
+1. **Create a sheet** — [sheets.google.com](https://sheets.google.com) → Blank spreadsheet.
+2. **Extensions → Apps Script** in that sheet.
+3. **Paste** `google-apps-script/Code.gs` (or **Copy script** on the setup page) → **Save**.
+4. Run **`setupSheetHeaders`** once (▶) → allow permissions → row 1 gets headers.
+5. **Deploy → New deployment → Web app** — Execute as: **Me**, Who has access: **Anyone** → copy the `/exec` URL.
+6. On the setup page: **+ Add** → pick group + member → paste URL in **Google Sheets webhook URL** → **Save all & apply**.
+
+Browser test: open the URL — you should see `WhatsApp Sheets Logger webhook is running.` (not a sign-in page).
 
 ### 2. Install & configure
 
