@@ -17,6 +17,7 @@ const {
   hasConfiguredTargets,
   maskWebhookUrl
 } = require('./target-config');
+const userConfig = require('./user-config');
 
 const TARGET_GROUP_ID = process.env.TARGET_GROUP_ID;
 const TARGET_USER_ID = process.env.TARGET_USER_ID;
@@ -27,6 +28,7 @@ const DISCOVERY_MODE = process.env.DISCOVERY_MODE === 'true';
 const SETUP_TOKEN = process.env.SETUP_TOKEN;
 const SETUP_PORT = Number(process.env.SETUP_PORT) || 3099;
 const SERVER_IP = process.env.SERVER_IP?.trim() || '';
+const TIMEZONE = userConfig.TIMEZONE || 'Asia/Karachi';
 
 function getSetupPageUrl() {
   const host = SERVER_IP || 'localhost';
@@ -381,13 +383,29 @@ function truncateText(text, max = QUOTED_TEXT_MAX_LEN) {
   return `${value.slice(0, max - 1)}…`;
 }
 
+function formatInTimezone(value, timeZone = TIMEZONE) {
+  const date = value instanceof Date ? value : new Date(value);
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).formatToParts(date);
+
+  const get = (type) => parts.find((part) => part.type === type)?.value || '00';
+  const dateStr = `${get('year')}-${get('month')}-${get('day')}`;
+  const timeStr = `${get('hour')}:${get('minute')}:${get('second')}`;
+  return { date: dateStr, time: timeStr, loggedAt: `${dateStr} ${timeStr}` };
+}
+
 function formatMessageTimestamp(message) {
   const seconds = Number(message.timestamp);
   const date = Number.isFinite(seconds) ? new Date(seconds * 1000) : new Date();
-  return {
-    date: date.toISOString().split('T')[0],
-    time: date.toLocaleTimeString('en-US', { hour12: false })
-  };
+  return formatInTimezone(date);
 }
 
 function extractGroupName(groupLabel, fallback = '') {
@@ -475,7 +493,7 @@ async function buildPayload(message, contact, quotedInfo, target) {
     forwarded: yesNo(message.isForwarded),
     links: joinList(message.links),
     mentions: joinList(message.mentionedIds),
-    loggedAt: new Date().toISOString()
+    loggedAt: formatInTimezone(new Date()).loggedAt
   };
 }
 

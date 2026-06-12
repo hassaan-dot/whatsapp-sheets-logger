@@ -133,6 +133,7 @@ If `SETUP_TOKEN` is not set, the bot falls back to printing the QR in the termin
 | `SETUP_TOKEN` | Secret token for `/setup` web page (enables remote QR scan) |
 | `SETUP_PORT` | Port for setup page (default `3099`; avoid `3000` — often used by other dev apps) |
 | `SERVER_IP` | Your server public IP — printed in logs as the full setup URL |
+| *(file)* `user-config.js` | Set `TIMEZONE` (default `Asia/Karachi`) — edit on server, no `.env` change needed |
 
 ## How it works
 
