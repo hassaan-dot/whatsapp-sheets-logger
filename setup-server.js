@@ -1346,6 +1346,56 @@ function renderPage({ token }) {
     document.getElementById('sync-groups').addEventListener('click', syncGroups);
     document.getElementById('add-portion').addEventListener('click', () => addPortion());
 
+    async function copyTextToClipboard(text) {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return 'copied';
+      }
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      textarea.style.top = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      textarea.setSelectionRange(0, text.length);
+      try {
+        const ok = document.execCommand('copy');
+        document.body.removeChild(textarea);
+        if (ok) return 'copied';
+      } catch (_) {
+        document.body.removeChild(textarea);
+      }
+      return 'manual';
+    }
+
+    function showScriptForManualCopy(script) {
+      var existing = document.getElementById('script-copy-modal');
+      if (existing) existing.remove();
+      var modal = document.createElement('div');
+      modal.id = 'script-copy-modal';
+      modal.style.cssText =
+        'position:fixed;inset:0;z-index:300;background:rgba(0,0,0,0.55);padding:1rem;display:flex;align-items:center;justify-content:center;';
+      modal.innerHTML =
+        '<div style="background:#fff;border-radius:10px;padding:1rem;max-width:100%;width:min(640px,100%);max-height:85vh;display:flex;flex-direction:column;gap:0.5rem;">' +
+        '<p style="margin:0;font-weight:600;color:#0d6b60;">Select all and copy (Ctrl+C / long-press → Copy)</p>' +
+        '<textarea id="script-copy-area" readonly style="flex:1;min-height:220px;font-family:monospace;font-size:0.72rem;width:100%;box-sizing:border-box;padding:0.5rem;border:1px solid #ccc;border-radius:6px;"></textarea>' +
+        '<button type="button" id="script-copy-close" style="align-self:flex-end;background:#128c7e;color:#fff;border:none;border-radius:6px;padding:0.5rem 1rem;">Done</button></div>';
+      document.body.appendChild(modal);
+      var area = document.getElementById('script-copy-area');
+      area.value = script;
+      area.focus();
+      area.select();
+      document.getElementById('script-copy-close').addEventListener('click', function () {
+        modal.remove();
+      });
+      modal.addEventListener('click', function (e) {
+        if (e.target === modal) modal.remove();
+      });
+    }
+
     document.getElementById('copy-apps-script').addEventListener('click', async () => {
       const feedback = document.getElementById('copy-script-feedback');
       feedback.textContent = 'Loading…';
@@ -1354,9 +1404,15 @@ function renderPage({ token }) {
         const res = await fetch('/setup/script?token=' + encodeURIComponent(token));
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Could not load script');
-        await navigator.clipboard.writeText(data.script);
-        feedback.textContent = 'Script copied — paste it in Apps Script (step 3).';
-        feedback.className = 'ok';
+        const result = await copyTextToClipboard(data.script);
+        if (result === 'copied') {
+          feedback.textContent = 'Script copied — paste it in Apps Script (step 3).';
+          feedback.className = 'ok';
+        } else {
+          showScriptForManualCopy(data.script);
+          feedback.textContent = 'Select the script in the popup and copy it manually.';
+          feedback.className = 'ok';
+        }
       } catch (err) {
         feedback.textContent = err.message;
         feedback.className = 'err';
