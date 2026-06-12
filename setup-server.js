@@ -5,6 +5,7 @@ const QRCode = require('qrcode');
 const { normalizeMembers, memberLabels } = require('./target-config');
 
 const APPS_SCRIPT_PATH = path.join(__dirname, 'google-apps-script', 'Code.gs');
+const SUCCESS_LOTTIE_PATH = path.join(__dirname, 'assets', 'success-lottie.json');
 
 const MAX_LOG_LINES = 500;
 const QR_EXPIRY_MS = 50000;
@@ -23,78 +24,149 @@ function renderPage({ token }) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>WhatsApp Setup</title>
+  <title>WhatsApp Sheets Automator</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js" crossorigin="anonymous"></script>
   <style>
+    :root {
+      --sidebar-w: 15rem;
+      --topbar-h: 3.5rem;
+      --accent: #128c7e;
+      --accent-dark: #0d6b60;
+      --sidebar-bg: #0f172a;
+      --sidebar-hover: #1e293b;
+      --sidebar-text: #94a3b8;
+      --sidebar-active-bg: rgba(18, 140, 126, 0.15);
+      --content-bg: #f1f5f9;
+      --card-bg: #ffffff;
+      --border: #e2e8f0;
+      --text: #0f172a;
+      --muted: #64748b;
+    }
     *, *::before, *::after { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
     body {
-      font-family: system-ui, sans-serif;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+      background: var(--content-bg);
+      color: var(--text);
+    }
+    .app-layout {
+      display: flex;
+      min-height: 100vh;
+      min-height: 100dvh;
+    }
+    .app-main-column {
+      flex: 1;
+      min-width: 0;
       display: flex;
       flex-direction: column;
       min-height: 100vh;
-      background: #f5f5f5;
-      color: #222;
+      min-height: 100dvh;
     }
-    .app-navbar {
+    .topbar {
       flex-shrink: 0;
+      height: var(--topbar-h);
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 1rem;
-      padding: 0.65rem 1.25rem;
-      background: #128c7e;
-      color: #fff;
-      border-bottom: 1px solid #0e6b60;
+      gap: 0.75rem;
+      padding: 0 1.25rem 0 1rem;
+      background: var(--card-bg);
+      border-bottom: 1px solid var(--border);
+      z-index: 20;
     }
-    .navbar-brand {
-      font-size: 1rem;
-      font-weight: 700;
-      line-height: 1.2;
-      white-space: nowrap;
+    .btn-sidebar-toggle {
+      display: none;
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      width: 2.25rem;
+      height: 2.25rem;
+      font-size: 1.1rem;
+      cursor: pointer;
+      color: var(--text);
+      flex-shrink: 0;
     }
-    .navbar-brand small {
-      display: block;
-      font-size: 0.72rem;
-      font-weight: 400;
-      opacity: 0.85;
-      margin-top: 0.15rem;
-    }
-    .navbar-center {
+    .topbar-page {
       flex: 1;
       min-width: 0;
-      text-align: center;
-      font-size: 0.85rem;
-      opacity: 0.95;
     }
-    .navbar-center[hidden] { display: none !important; }
-    .navbar-right {
+    #topbar-page-title {
+      margin: 0;
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: -0.02em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .topbar-status {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      max-width: 14rem;
+      padding: 0.35rem 0.65rem;
+      background: #f8fafc;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      min-width: 0;
+    }
+    .topbar-status[hidden] { display: none !important; }
+    .status-dot {
+      width: 0.5rem;
+      height: 0.5rem;
+      border-radius: 50%;
+      background: #94a3b8;
+      flex-shrink: 0;
+      animation: pulse-dot 2s ease infinite;
+    }
+    .status-dot.ready { background: #22c55e; animation: none; }
+    .status-dot.error { background: #ef4444; animation: none; }
+    .status-dot.loading { background: #f59e0b; }
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .status-text {
+      margin: 0;
+      font-size: 0.72rem;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .status-text.ready { color: #15803d; font-weight: 600; }
+    .status-text.error { color: #dc2626; font-weight: 600; }
+    .topbar-user {
       display: flex;
       align-items: center;
       gap: 0.5rem;
       flex-shrink: 0;
     }
-    .navbar-right[hidden] { display: none !important; }
+    .topbar-user[hidden] { display: none !important; }
     .user-pill {
       display: inline-flex;
       align-items: center;
       gap: 0.4rem;
-      background: rgba(255, 255, 255, 0.15);
-      border: 1px solid rgba(255, 255, 255, 0.25);
+      background: #f0fdf9;
+      border: 1px solid #b8e0db;
       border-radius: 999px;
-      padding: 0.3rem 0.65rem 0.3rem 0.45rem;
-      font-size: 0.82rem;
+      padding: 0.28rem 0.6rem 0.28rem 0.35rem;
+      font-size: 0.78rem;
       font-weight: 600;
-      max-width: 220px;
+      color: var(--accent-dark);
+      max-width: 11rem;
     }
     .user-avatar {
-      width: 1.5rem;
-      height: 1.5rem;
+      width: 1.45rem;
+      height: 1.45rem;
       border-radius: 50%;
-      background: rgba(255, 255, 255, 0.25);
+      background: var(--accent);
+      color: #fff;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      font-size: 0.75rem;
+      font-size: 0.72rem;
       flex-shrink: 0;
     }
     .user-name {
@@ -104,51 +176,336 @@ function renderPage({ token }) {
     }
     .btn-navbar-logout {
       background: #fff;
-      color: #c00;
-      border: none;
-      border-radius: 6px;
-      padding: 0.4rem 0.7rem;
-      font-size: 0.78rem;
+      color: #dc2626;
+      border: 1px solid #fecaca;
+      border-radius: 8px;
+      padding: 0.38rem 0.65rem;
+      font-size: 0.72rem;
       font-weight: 600;
       cursor: pointer;
       white-space: nowrap;
     }
     .btn-navbar-logout:disabled { opacity: 0.65; cursor: not-allowed; }
-    h2 { font-size: 1rem; text-align: left; margin: 0 0 0.75rem; }
-    .status { color: inherit; margin: 0; font-size: 0.85rem; }
-    .status.ready { color: #dffef8; font-weight: 600; }
-    .status.error { color: #ffd4d4; font-weight: 600; }
-    .app-main {
+    .app-shell {
       flex: 1;
+      display: flex;
+      min-height: 0;
+      position: relative;
+      overflow: hidden;
+    }
+    .sidebar-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.45);
+      z-index: 28;
+    }
+    body.sidebar-open .sidebar-backdrop { display: block; }
+    .sidebar {
+      width: var(--sidebar-w);
+      flex-shrink: 0;
+      background: var(--sidebar-bg);
+      color: var(--sidebar-text);
       display: flex;
       flex-direction: column;
-      gap: 1rem;
-      min-height: 0;
-      padding: 1rem 1.25rem;
+      border-right: 1px solid #1e293b;
     }
-    .app-columns {
+    .sidebar-brand {
       display: flex;
-      gap: 1rem;
-      align-items: stretch;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 1.15rem 1rem;
+      min-height: var(--topbar-h);
+      border-bottom: 1px solid #1e293b;
+      box-sizing: border-box;
+    }
+    .wa-logo {
+      width: 2.35rem;
+      height: 2.35rem;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 12px;
+      background: #25d366;
+      box-shadow: 0 2px 10px rgba(37, 211, 102, 0.35);
+    }
+    .wa-logo svg {
+      width: 1.45rem;
+      height: 1.45rem;
+      fill: #fff;
+      display: block;
+    }
+    .wa-logo-sm {
+      width: 1.25rem;
+      height: 1.25rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       flex-shrink: 0;
     }
-    .app-columns.logged-in #qr-section { display: none !important; }
-    .app-columns.logged-in #target-panel {
-      max-height: none;
+    .wa-logo-sm svg {
+      width: 1.15rem;
+      height: 1.15rem;
+      fill: #25d366;
+      display: block;
+    }
+    .nav-item.active .wa-logo-sm svg { fill: #5eead4; }
+    .sidebar-brand-title {
+      font-size: 0.92rem;
+      font-weight: 700;
+      color: #f8fafc;
+      line-height: 1.25;
+      letter-spacing: -0.01em;
+    }
+    .sidebar-brand-sub {
+      font-size: 0.62rem;
+      color: #64748b;
+      margin-top: 0.2rem;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+    .sidebar-label {
+      padding: 0.85rem 1rem 0.45rem;
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #475569;
+    }
+    .sidebar-nav {
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+      padding: 0 0.6rem;
       flex: 1;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      width: 100%;
+      padding: 0.65rem 0.75rem;
+      border: none;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--sidebar-text);
+      font-size: 0.88rem;
+      font-weight: 500;
+      text-align: left;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .nav-item:hover { background: var(--sidebar-hover); color: #e2e8f0; }
+    .nav-item.active {
+      background: var(--sidebar-active-bg);
+      color: #5eead4;
+      font-weight: 600;
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+    .nav-icon {
+      width: 1.25rem;
+      text-align: center;
+      font-size: 1rem;
+      opacity: 0.9;
+    }
+    .sidebar-footer {
+      padding: 1rem;
+      border-top: 1px solid #1e293b;
+      font-size: 0.7rem;
+      color: #475569;
+      line-height: 1.4;
+    }
+    .sidebar-footer strong { color: #94a3b8; display: block; margin-bottom: 0.35rem; font-size: 0.72rem; }
+    .sidebar-footer .footer-credit { color: #64748b; font-size: 0.68rem; }
+    .content {
+      flex: 1;
+      min-width: 0;
+      overflow-y: auto;
+      padding: 1.25rem 1.5rem;
+      -webkit-overflow-scrolling: touch;
+    }
+    .view-panel { display: none; }
+    .view-panel.active { display: block; }
+    .dash-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+      gap: 0.75rem;
+      margin-bottom: 1.25rem;
+    }
+    .dash-stat-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+    }
+    .dash-stat-label {
+      font-size: 0.68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      margin-bottom: 0.35rem;
+    }
+    .dash-stat-value {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1.1;
+    }
+    .dash-stat-value.ok { color: #15803d; }
+    .dash-stat-value.warn { color: #b45309; }
+    .dash-stat-value.muted { color: var(--muted); font-size: 1rem; }
+    .dash-stat-sub {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-top: 0.3rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .dash-section-title {
+      font-size: 0.9rem;
+      font-weight: 700;
+      margin: 0 0 0.75rem;
+      color: var(--text);
+    }
+    .dash-config-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+    }
+    .dash-config-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem 1.1rem;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+    }
+    .dash-config-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.5rem;
+      margin-bottom: 0.65rem;
+    }
+    .dash-config-group {
+      font-weight: 700;
+      font-size: 0.95rem;
+      color: var(--text);
+    }
+    .dash-badge {
+      flex-shrink: 0;
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      padding: 0.2rem 0.5rem;
+      border-radius: 999px;
+    }
+    .dash-badge.active { background: #dcfce7; color: #15803d; }
+    .dash-badge.saved { background: #f1f5f9; color: #64748b; }
+    .dash-badge.offline { background: #fef2f2; color: #dc2626; }
+    .dash-config-row {
+      display: flex;
+      gap: 0.5rem;
+      font-size: 0.82rem;
+      margin-bottom: 0.35rem;
+      line-height: 1.4;
+    }
+    .dash-config-row:last-child { margin-bottom: 0; }
+    .dash-config-key {
+      flex: 0 0 5.5rem;
+      color: var(--muted);
+      font-weight: 500;
+    }
+    .dash-config-val {
+      flex: 1;
+      min-width: 0;
+      color: var(--text);
+      word-break: break-word;
+    }
+    .dash-empty {
+      text-align: center;
+      padding: 2rem 1rem;
+      color: var(--muted);
+      font-size: 0.88rem;
+      background: var(--card-bg);
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+    }
+    .dash-empty button {
+      margin-top: 0.75rem;
+      font-size: 0.85rem;
+    }
+    .page-header {
+      margin-bottom: 1.1rem;
+    }
+    .page-header h1 { display: none; }
+    .page-header p {
+      margin: 0 0 1rem;
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+    h2 { font-size: 1rem; text-align: left; margin: 0 0 0.75rem; }
+    .status { color: inherit; margin: 0; font-size: 0.85rem; }
+    body.connected #view-connection #qr-frame,
+    body.connected #view-connection #instructions,
+    body.connected #view-connection .session-steps,
+    body.connected #view-connection .progress-wrap,
+    body.connected #view-connection #qr-hint,
+    body.connected #view-connection #qr-expiry,
+    body.connected #view-connection #qr-connected-badge,
+    #qr-section.is-connected #qr-frame,
+    #qr-section.is-connected #instructions,
+    #qr-section.is-connected .session-steps,
+    #qr-section.is-connected .progress-wrap,
+    #qr-section.is-connected #qr-hint,
+    #qr-section.is-connected #qr-expiry,
+    #qr-section.is-connected #qr-connected-badge {
+      display: none !important;
+    }
+    .connection-success {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 1.25rem 1rem 1.75rem;
       width: 100%;
     }
+    .connection-success.visible {
+      display: flex;
+    }
+    .success-lottie {
+      width: 11rem;
+      height: 11rem;
+      max-width: 55vw;
+      max-height: 55vw;
+    }
+    .success-title {
+      margin: 0.25rem 0 0.35rem;
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #15803d;
+    }
+    .success-sub {
+      margin: 0;
+      font-size: 0.88rem;
+      color: var(--muted);
+      max-width: 18rem;
+      line-height: 1.45;
+    }
     #qr-section {
-      flex: 0 0 300px;
       display: flex;
       flex-direction: column;
       align-items: center;
       text-align: center;
-      border: 1px dashed #ccc;
-      border-radius: 8px;
-      padding: 1rem;
-      background: #fff;
-      min-height: 320px;
+      max-width: 28rem;
+      margin: 0 auto;
+      min-height: 280px;
     }
     #qr-hint { color: #666; font-size: 0.9rem; margin: 0.5rem 0; }
     .qr-frame {
@@ -297,16 +654,16 @@ function renderPage({ token }) {
     .qr-connected-badge.visible { display: flex; }
     .panel {
       text-align: left;
-      border: 1px solid #e0e0e0;
-      border-radius: 8px;
-      padding: 1rem;
-      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+      background: var(--card-bg);
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
     }
     #target-panel {
-      flex: 1;
       min-width: 0;
-      overflow-y: auto;
-      max-height: 520px;
+      overflow-y: visible;
+      max-height: none;
     }
     .field { margin-bottom: 0.75rem; }
     .field label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.25rem; }
@@ -561,10 +918,16 @@ function renderPage({ token }) {
       margin-top: 0.5rem;
     }
     .logs-section {
-      flex: 1;
       display: flex;
       flex-direction: column;
-      min-height: 12rem;
+      min-height: calc(100vh - 12rem);
+    }
+    #view-logs .logs-section {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
     }
     .logs-header {
       display: flex;
@@ -629,84 +992,35 @@ function renderPage({ token }) {
         height: auto;
         min-height: 100%;
         overflow-x: hidden;
-        overflow-y: auto;
         max-width: 100%;
-        -webkit-overflow-scrolling: touch;
       }
       body {
-        display: block;
         min-height: 100vh;
         min-height: 100dvh;
       }
-      .app-navbar {
-        position: sticky;
+      .app-layout { flex-direction: column; }
+      .app-main-column { min-height: auto; }
+      .btn-sidebar-toggle { display: flex; align-items: center; justify-content: center; }
+      .topbar { padding: 0 0.65rem; gap: 0.5rem; }
+      .topbar-status { display: none !important; }
+      #topbar-page-title { font-size: 0.95rem; }
+      .sidebar {
+        position: fixed;
         top: 0;
-        z-index: 50;
+        left: 0;
+        bottom: 0;
+        z-index: 30;
+        transform: translateX(-100%);
+        transition: transform 0.22s ease;
+        box-shadow: 4px 0 24px rgba(0,0,0,0.2);
       }
-      .app-main {
-        display: block;
-        min-height: auto;
+      body.sidebar-open .sidebar { transform: translateX(0); }
+      .content {
+        padding: 0.85rem;
         padding-bottom: calc(1.25rem + env(safe-area-inset-bottom, 0px));
-      }
-      .app-columns {
-        flex-shrink: 1;
-      }
-      .app-navbar {
-        flex-wrap: wrap;
-        align-items: flex-start;
-        padding: 0.55rem 0.75rem;
-        gap: 0.45rem;
-      }
-      .navbar-brand {
-        white-space: normal;
-        font-size: 0.88rem;
-        flex: 1 1 auto;
-        min-width: 0;
-        max-width: calc(100% - 8rem);
-      }
-      .navbar-brand small { font-size: 0.68rem; }
-      .navbar-center {
-        order: 4;
-        flex: 1 1 100%;
-        text-align: left;
-        font-size: 0.78rem;
-      }
-      .navbar-right {
-        flex: 1 1 100%;
-        flex-basis: 100%;
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        justify-content: space-between;
-        gap: 0.4rem;
-        max-width: 100%;
-      }
-      .user-pill {
-        flex: 1 1 auto;
-        min-width: 0;
-        max-width: calc(100% - 7.5rem);
-        font-size: 0.76rem;
-      }
-      .btn-navbar-logout {
-        flex: 0 1 auto;
-        max-width: 7.25rem;
-        white-space: normal;
-        text-align: center;
-        padding: 0.4rem 0.5rem;
-        font-size: 0.7rem;
-        line-height: 1.2;
-      }
-      .app-main {
-        padding: 0.65rem 0.75rem calc(1.5rem + env(safe-area-inset-bottom, 0px));
-        gap: 0.75rem;
         width: 100%;
-        max-width: 100vw;
       }
-      .app-columns {
-        flex-direction: column;
-        width: 100%;
-        max-width: 100%;
-      }
+      .page-header h1 { font-size: 1.15rem; }
       #qr-section {
         flex: none;
         width: 100%;
@@ -724,12 +1038,7 @@ function renderPage({ token }) {
         max-width: 256px;
         max-height: 256px;
       }
-      #target-panel {
-        max-height: none;
-        width: 100%;
-        max-width: 100%;
-        padding: 0.85rem;
-      }
+      #target-panel { padding: 0.85rem; }
       .panel { max-width: 100%; }
       .portions-toolbar {
         flex-direction: column;
@@ -774,41 +1083,113 @@ function renderPage({ token }) {
       }
     }
     @media (max-width: 420px) {
-      .navbar-right {
-        flex-direction: column;
-        align-items: stretch;
-      }
-      .user-pill,
-      .btn-navbar-logout {
-        max-width: 100%;
-        width: 100%;
-        justify-content: center;
-      }
-      .btn-navbar-logout { max-width: 100%; }
+      .topbar-user { gap: 0.35rem; }
+      .user-pill { max-width: 6.5rem; font-size: 0.7rem; }
+      .btn-navbar-logout { padding: 0.35rem 0.45rem; font-size: 0.65rem; }
     }
   </style>
 </head>
 <body>
-  <header class="app-navbar">
-    <div class="navbar-brand">
-      WhatsApp Sheets Logger
-      <small>Setup &amp; monitoring</small>
-    </div>
-    <p id="status" class="navbar-center status">Loading…</p>
-    <div class="navbar-right" id="navbar-user" hidden>
-      <span class="user-pill" title="Logged-in WhatsApp account">
-        <span class="user-avatar" id="user-avatar">?</span>
-        <span class="user-name" id="user-name">—</span>
-      </span>
-      <button type="button" class="btn-navbar-logout" id="navbar-logout" title="Unlink this device and show a new QR code">
-        Log out everywhere
-      </button>
-    </div>
-  </header>
+  <div class="app-layout">
+    <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-brand">
+        <span class="wa-logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="WhatsApp">
+            <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+          </svg>
+        </span>
+        <div>
+          <div class="sidebar-brand-title">Sheets Automator</div>
+          <div class="sidebar-brand-sub">Automation platform</div>
+        </div>
+      </div>
+      <p class="sidebar-label">Menu</p>
+      <nav class="sidebar-nav">
+        <button type="button" class="nav-item" data-view="dashboard">
+          <span class="nav-icon">📊</span> Dashboard
+        </button>
+        <button type="button" class="nav-item active" data-view="connection">
+          <span class="wa-logo-sm" aria-hidden="true">
+            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+          </span>
+          Connection
+        </button>
+        <button type="button" class="nav-item" data-view="automations">
+          <span class="nav-icon">⚙️</span> Automations
+        </button>
+        <button type="button" class="nav-item" data-view="logs">
+          <span class="nav-icon">📋</span> Activity log
+        </button>
+      </nav>
+      <div class="sidebar-footer">
+        <strong>Powered by WhatsApp</strong>
+        <span class="footer-credit">Created by Hassaan Khawaja</span>
+      </div>
+    </aside>
 
-  <main class="app-main">
-    <div class="app-columns">
-      <section id="qr-section">
+    <div class="app-main-column">
+    <header class="topbar">
+      <button type="button" class="btn-sidebar-toggle" id="sidebar-toggle" aria-label="Open menu">☰</button>
+      <div class="topbar-page">
+        <h1 id="topbar-page-title">Connection</h1>
+      </div>
+      <div class="topbar-status" id="status-wrap">
+        <span class="status-dot loading" id="status-dot"></span>
+        <p id="status" class="status-text">Loading…</p>
+      </div>
+      <div class="topbar-user" id="navbar-user" hidden>
+        <span class="user-pill" title="Logged-in WhatsApp account">
+          <span class="user-avatar" id="user-avatar">?</span>
+          <span class="user-name" id="user-name">—</span>
+        </span>
+        <button type="button" class="btn-navbar-logout" id="navbar-logout" title="Unlink this device and show a new QR code">
+          Log out
+        </button>
+      </div>
+    </header>
+
+    <div class="app-shell">
+    <main class="content">
+      <section class="view-panel" id="view-dashboard">
+        <div class="page-header">
+          <h1>Dashboard</h1>
+          <p>Overview of your WhatsApp → Google Sheets automations</p>
+        </div>
+        <div class="dash-stats">
+          <div class="dash-stat-card">
+            <div class="dash-stat-label">WhatsApp</div>
+            <div class="dash-stat-value muted" id="dash-whatsapp">—</div>
+            <div class="dash-stat-sub" id="dash-whatsapp-user">Not connected</div>
+          </div>
+          <div class="dash-stat-card">
+            <div class="dash-stat-label">Active groups</div>
+            <div class="dash-stat-value" id="dash-active-groups">0</div>
+            <div class="dash-stat-sub">Currently monitoring</div>
+          </div>
+          <div class="dash-stat-card">
+            <div class="dash-stat-label">Automations</div>
+            <div class="dash-stat-value" id="dash-saved-count">0</div>
+            <div class="dash-stat-sub">Saved configurations</div>
+          </div>
+          <div class="dash-stat-card">
+            <div class="dash-stat-label">People</div>
+            <div class="dash-stat-value" id="dash-people-count">0</div>
+            <div class="dash-stat-sub">Selected to log</div>
+          </div>
+        </div>
+        <h2 class="dash-section-title">Automation details</h2>
+        <div class="dash-config-list" id="dash-config-list">
+          <p class="dash-empty">Connect WhatsApp and add automations to see stats here.</p>
+        </div>
+      </section>
+
+      <section class="view-panel active" id="view-connection">
+        <div class="page-header">
+          <h1>Connection</h1>
+          <p>Link WhatsApp to enable automations</p>
+        </div>
+      <section id="qr-section" class="panel">
         <strong>WhatsApp login</strong>
         <div class="session-steps" id="session-steps">
           <div class="session-step" data-step="boot">Launch</div>
@@ -831,14 +1212,26 @@ function renderPage({ token }) {
           <img id="qr" alt="WhatsApp QR code" width="256" height="256" />
         </div>
         <p id="qr-expiry" class="qr-expiry" hidden></p>
+        <div id="connection-success" class="connection-success" hidden>
+          <div id="success-lottie" class="success-lottie" aria-hidden="true"></div>
+          <p class="success-title">WhatsApp connected</p>
+          <p class="success-sub" id="success-user-hint">You're ready to set up automations.</p>
+        </div>
         <p id="qr-connected-badge" class="qr-connected-badge">✓ WhatsApp connected</p>
         <ol id="instructions">
           <li>Open <strong>WhatsApp</strong> on your phone</li>
           <li>Go to <strong>Settings → Linked devices → Link a device</strong></li>
           <li>Scan the QR code above</li>
+          <li>Keep WhatsApp <strong>open</strong> until sync finishes — tap <strong>Paused syncing</strong> if your phone shows it</li>
         </ol>
       </section>
+      </section>
 
+      <section class="view-panel" id="view-automations">
+        <div class="page-header">
+          <h1>Automations</h1>
+          <p>Map WhatsApp groups and members to Google Sheets</p>
+        </div>
       <section class="panel session-off" id="target-panel">
         <h2>Configurations</h2>
         <p class="session-hint" id="target-session-hint">Scan the QR code to log in, then add configurations here.</p>
@@ -877,40 +1270,133 @@ function renderPage({ token }) {
         <p id="target-feedback"></p>
         <div id="target-active"></div>
       </section>
-    </div>
+      </section>
 
+      <section class="view-panel" id="view-logs">
+        <div class="page-header">
+          <h1>Activity log</h1>
+          <p>Real-time bot output and monitoring status</p>
+        </div>
     <section class="logs-section" id="logs-section">
       <div class="logs-header">
-        <p class="logs-title">Logs</p>
+        <p class="logs-title">Console</p>
         <button type="button" class="btn-logs-expand" id="logs-expand" aria-label="Expand logs fullscreen"></button>
       </div>
       <pre id="logs"></pre>
     </section>
-  </main>
+      </section>
+    </main>
+    </div>
+    </div>
+  </div>
   <script>
     const token = ${JSON.stringify(token)};
     let logIndex = 0;
+    let successLottieAnim = null;
+    let successLottieLoaded = false;
+
+    function showConnectionSuccess(userName) {
+      const panel = document.getElementById('connection-success');
+      const hint = document.getElementById('success-user-hint');
+      panel.hidden = false;
+      panel.classList.add('visible');
+      hint.textContent = userName
+        ? 'Logged in as ' + userName + '. Your automations are ready.'
+        : "You're ready to set up automations.";
+
+      if (!window.lottie) return;
+
+      const container = document.getElementById('success-lottie');
+      if (!successLottieLoaded) {
+        successLottieAnim = lottie.loadAnimation({
+          container,
+          renderer: 'svg',
+          loop: false,
+          autoplay: true,
+          path: '/setup/lottie-success?token=' + encodeURIComponent(token)
+        });
+        successLottieLoaded = true;
+      } else if (successLottieAnim) {
+        successLottieAnim.goToAndPlay(0, true);
+      }
+    }
+
+    function hideConnectionSuccess() {
+      const panel = document.getElementById('connection-success');
+      panel.hidden = true;
+      panel.classList.remove('visible');
+      if (successLottieAnim) {
+        successLottieAnim.destroy();
+        successLottieAnim = null;
+      }
+      successLottieLoaded = false;
+      document.getElementById('success-lottie').innerHTML = '';
+    }
 
     function setStatus(message, status) {
       const el = document.getElementById('status');
+      const dot = document.getElementById('status-dot');
       el.textContent = message;
-      let cls = 'navbar-center status';
-      if (status === 'ready') cls += ' ready';
-      else if (status === 'error') cls += ' error';
-      el.className = cls;
+      el.className = 'status-text';
+      dot.className = 'status-dot';
+      if (status === 'ready') {
+        el.classList.add('ready');
+        dot.classList.add('ready');
+      } else if (status === 'error') {
+        el.classList.add('error');
+        dot.classList.add('error');
+      } else {
+        dot.classList.add('loading');
+      }
     }
+
+    const viewTitles = {
+      dashboard: 'Dashboard',
+      connection: 'Connection',
+      automations: 'Automations',
+      logs: 'Activity log'
+    };
+
+    function switchView(name) {
+      document.querySelectorAll('.view-panel').forEach((panel) => {
+        panel.classList.toggle('active', panel.id === 'view-' + name);
+      });
+      document.querySelectorAll('.nav-item').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.view === name);
+      });
+      const titleEl = document.getElementById('topbar-page-title');
+      if (titleEl) titleEl.textContent = viewTitles[name] || 'Sheets Automator';
+      document.body.classList.remove('sidebar-open');
+    }
+
+    document.querySelectorAll('.nav-item').forEach((btn) => {
+      btn.addEventListener('click', () => switchView(btn.dataset.view));
+    });
+    document.getElementById('sidebar-toggle').addEventListener('click', () => {
+      document.body.classList.toggle('sidebar-open');
+    });
+    document.getElementById('sidebar-backdrop').addEventListener('click', () => {
+      document.body.classList.remove('sidebar-open');
+    });
 
     function updateNavbar(data) {
       const ready = !!(data.ready || data.status === 'ready');
       const isError = data.status === 'error';
       const user = data.whatsAppUser;
-      const statusEl = document.getElementById('status');
+      const statusWrap = document.getElementById('status-wrap');
       const userBar = document.getElementById('navbar-user');
       const userPill = userBar.querySelector('.user-pill');
 
-      const showBar = ready || isError;
-      userBar.hidden = !showBar;
-      statusEl.hidden = ready && !!user;
+      document.body.classList.toggle('connected', ready);
+      if (ready) {
+        showConnectionSuccess(user?.name);
+      } else {
+        hideConnectionSuccess();
+      }
+
+      const showUser = ready || isError;
+      userBar.hidden = !showUser;
+      statusWrap.hidden = ready && !!user;
 
       if (ready && user) {
         userPill.hidden = false;
@@ -920,8 +1406,6 @@ function renderPage({ token }) {
       } else if (isError) {
         userPill.hidden = true;
       }
-
-      document.querySelector('.app-columns').classList.toggle('logged-in', ready);
     }
 
     const sourceLabels = {
@@ -935,6 +1419,15 @@ function renderPage({ token }) {
     let defaultWebhookUrl = '';
     let whatsAppReady = false;
     let suppressPortionRender = false;
+    let lastSession = {};
+
+    function escHtml(text) {
+      return String(text || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
 
     function newPortionId() {
       return 'p-' + Date.now() + '-' + Math.random().toString(36).slice(2, 9);
@@ -1243,6 +1736,101 @@ function renderPage({ token }) {
       feedback.className = cls || '';
     }
 
+    function maskSheetUrl(url) {
+      if (!url) return 'Default (.env)';
+      try {
+        const parsed = new URL(url);
+        const path = parsed.pathname;
+        if (path.length <= 20) return parsed.origin + path;
+        return parsed.origin + path.slice(0, 12) + '…' + path.slice(-8);
+      } catch {
+        return url.length > 32 ? url.slice(0, 20) + '…' : url;
+      }
+    }
+
+    function monitoringMatchesConfig(mon, cfg) {
+      if (!cfg?.groupName || !mon?.group) return false;
+      const group = String(mon.group).toLowerCase();
+      const name = String(cfg.groupName).toLowerCase();
+      return group.includes(name) || name.includes(group.split('(')[0].trim());
+    }
+
+    function renderDashboard({ ready, whatsAppUser, targets, monitoring } = {}) {
+      const configs = Array.isArray(targets) ? targets : [];
+      const active = Array.isArray(monitoring) ? monitoring : [];
+
+      const waEl = document.getElementById('dash-whatsapp');
+      const waUserEl = document.getElementById('dash-whatsapp-user');
+      if (ready) {
+        waEl.textContent = 'Online';
+        waEl.className = 'dash-stat-value ok';
+        waUserEl.textContent = whatsAppUser?.name ? 'Logged in as ' + whatsAppUser.name : 'Connected';
+      } else {
+        waEl.textContent = 'Offline';
+        waEl.className = 'dash-stat-value warn';
+        waUserEl.textContent = 'Scan QR on Connection tab';
+      }
+
+      document.getElementById('dash-active-groups').textContent = String(
+        ready ? active.length : 0
+      );
+      document.getElementById('dash-saved-count').textContent = String(configs.length);
+
+      const people = new Set();
+      configs.forEach((cfg) => {
+        (cfg.members || []).forEach((member) => {
+          if (member.name) people.add(member.name);
+        });
+      });
+      document.getElementById('dash-people-count').textContent = String(people.size);
+
+      const list = document.getElementById('dash-config-list');
+      list.innerHTML = '';
+      if (!configs.length) {
+        list.innerHTML =
+          '<div class="dash-empty">' +
+          (ready
+            ? 'No automations yet.<br><button type="button" class="btn-secondary" id="dash-go-automations">+ Add automation</button>'
+            : 'Connect WhatsApp first, then add automations.') +
+          '</div>';
+        const goBtn = document.getElementById('dash-go-automations');
+        if (goBtn) goBtn.addEventListener('click', () => switchView('automations'));
+        return;
+      }
+
+      configs.forEach((cfg) => {
+        const members = (cfg.members || []).map((m) => m.name).filter(Boolean);
+        const memberLabel = members.length ? members.join(', ') : '—';
+        const isActive = ready && active.some((mon) => monitoringMatchesConfig(mon, cfg));
+        const activeMon = active.find((mon) => monitoringMatchesConfig(mon, cfg));
+        const sheet =
+          activeMon?.sheet || maskSheetUrl(cfg.webhookUrl) || maskSheetUrl(defaultWebhookUrl);
+
+        const card = document.createElement('div');
+        card.className = 'dash-config-card';
+        card.innerHTML =
+          '<div class="dash-config-top">' +
+          '<span class="dash-config-group">' + escHtml(cfg.groupName || 'Unnamed group') + '</span>' +
+          '<span class="dash-badge ' +
+          (isActive ? 'active' : ready ? 'saved' : 'offline') +
+          '">' +
+          (isActive ? '● Active' : ready ? 'Saved' : 'Offline') +
+          '</span></div>' +
+          '<div class="dash-config-row"><span class="dash-config-key">People</span>' +
+          '<span class="dash-config-val">' + escHtml(memberLabel) + '</span></div>' +
+          '<div class="dash-config-row"><span class="dash-config-key">Google Sheet</span>' +
+          '<span class="dash-config-val">' + escHtml(sheet) + '</span></div>' +
+          (cfg.groupId
+            ? '<div class="dash-config-row"><span class="dash-config-key">Group ID</span>' +
+              '<span class="dash-config-val" style="font-size:0.75rem;">' +
+              escHtml(cfg.groupId) +
+              '</span></div>'
+            : '');
+
+        list.appendChild(card);
+      });
+    }
+
     function renderMonitoring(monitoring) {
       const el = document.getElementById('target-active');
       if (!monitoring || !monitoring.length) {
@@ -1457,6 +2045,12 @@ function renderPage({ token }) {
         sourceEl.textContent = 'Scan QR, then load groups and add configurations.';
       }
       renderMonitoring(data.monitoring);
+      renderDashboard({
+        ready: whatsAppReady,
+        whatsAppUser: lastSession.whatsAppUser,
+        targets: Array.isArray(data.targets) ? data.targets : portions,
+        monitoring: data.monitoring
+      });
     }
 
     async function loadTargets({ updateFields = true } = {}) {
@@ -1501,6 +2095,12 @@ function renderPage({ token }) {
         if (!res.ok) throw new Error(data.error || 'Save failed');
         setFeedback(data.warning || 'Saved. Monitoring updated.', data.warning ? 'err' : 'ok');
         renderMonitoring(data.monitoring);
+        renderDashboard({
+          ready: whatsAppReady,
+          whatsAppUser: lastSession.whatsAppUser,
+          targets: data.targets || portions,
+          monitoring: data.monitoring
+        });
         await loadTargets({ updateFields: true });
       } catch (err) {
         setFeedback(err.message, 'err');
@@ -1702,6 +2302,9 @@ function renderPage({ token }) {
 
       section.classList.toggle('is-connected', status === 'ready');
       connectedBadge.classList.toggle('visible', false);
+      if (status !== 'ready') {
+        hideConnectionSuccess();
+      }
 
       if (status === 'qr') {
         hint.textContent = qrMeta?.qrExpired
@@ -1747,7 +2350,9 @@ function renderPage({ token }) {
           setQrFrameVisible(false);
           setQrSkeleton(false);
           hideQrImage();
+          showConnectionSuccess(lastSession.whatsAppUser?.name);
         } else if (status === 'error') {
+          hideConnectionSuccess();
           hint.textContent = message || 'Login error. Use Log out everywhere in the navbar.';
           setQrFrameVisible(true);
           setQrSkeleton(true);
@@ -1805,6 +2410,9 @@ function renderPage({ token }) {
       btn.disabled = true;
       whatsAppReady = false;
       clearTargetForm();
+      switchView('connection');
+      document.body.classList.remove('connected');
+      hideConnectionSuccess();
       lastQrUiStatus = null;
       lastQrUpdatedAt = null;
       clearQrExpiryTimer();
@@ -1827,7 +2435,7 @@ function renderPage({ token }) {
         if (!res.ok) throw new Error(data.error || 'Logout failed');
       } catch (err) {
         setStatus(err.message, 'error');
-        document.getElementById('status').hidden = false;
+        document.getElementById('status-wrap').hidden = false;
       } finally {
         btn.disabled = false;
       }
@@ -1856,6 +2464,7 @@ function renderPage({ token }) {
         const data = await res.json();
 
         const session = normalizePoll(data);
+        lastSession = session;
         updateSessionState(session);
         const ready = session.ready;
         whatsAppReady = ready;
@@ -1868,9 +2477,18 @@ function renderPage({ token }) {
           initialPoll = true;
           wasReady = false;
         } else if (session.targets) {
-          applyTargetData(session.targets, { updateFields: initialPoll || !wasReady });
+          const firstReady = !wasReady;
+          applyTargetData(session.targets, { updateFields: initialPoll || firstReady });
+          if (firstReady) switchView('dashboard');
           initialPoll = false;
           wasReady = true;
+        } else {
+          renderDashboard({
+            ready: session.ready,
+            whatsAppUser: session.whatsAppUser,
+            targets: session.targets?.targets || portions,
+            monitoring: session.monitoring || session.targets?.monitoring
+          });
         }
 
         if (data.logs?.logs?.length) {
@@ -2096,6 +2714,17 @@ function createSetupServer({
       res.json({ members });
     } catch (err) {
       res.status(500).json({ error: err.message, members: [] });
+    }
+  });
+
+  app.get('/setup/lottie-success', checkToken, (req, res) => {
+    try {
+      if (!fs.existsSync(SUCCESS_LOTTIE_PATH)) {
+        return res.status(404).json({ error: 'Lottie animation not found on server.' });
+      }
+      res.type('application/json').send(fs.readFileSync(SUCCESS_LOTTIE_PATH, 'utf8'));
+    } catch (err) {
+      res.status(500).json({ error: err.message });
     }
   });
 

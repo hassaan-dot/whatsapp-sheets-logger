@@ -47,6 +47,7 @@ let authenticatedLogged = false;
 let hasAuthenticated = false;
 let lastQrPayload = null;
 let syncTimeout = null;
+let recoveryTimer = null;
 let applyTargetsRef = null;
 let groupsCache = null;
 let groupsCacheAt = 0;
@@ -64,6 +65,9 @@ const SYNC_TIMEOUT_MS = Number(process.env.SYNC_TIMEOUT_MS) || 180000;
 const QUOTED_LOOKUP_TIMEOUT_MS = Number(process.env.QUOTED_LOOKUP_TIMEOUT_MS) || 8000;
 const QUOTED_TEXT_MAX_LEN = 500;
 
+const SYNC_WAIT_HINT =
+  'Syncing on your phone — keep WhatsApp open. If it says "Paused syncing", tap to resume.';
+
 function clearSyncTimeout() {
   if (syncTimeout) {
     clearTimeout(syncTimeout);
@@ -71,14 +75,34 @@ function clearSyncTimeout() {
   }
 }
 
+function stopRecoveryPolling() {
+  if (recoveryTimer) {
+    clearInterval(recoveryTimer);
+    recoveryTimer = null;
+  }
+}
+
+function startRecoveryPolling() {
+  if (recoveryTimer || clientReady || isResettingSession) return;
+  recoveryTimer = setInterval(() => {
+    if (clientReady || isResettingSession) {
+      stopRecoveryPolling();
+      return;
+    }
+    recoverConnectionStateIfNeeded().catch(() => {});
+  }, 5000);
+}
+
 function startSyncTimeout() {
   clearSyncTimeout();
+  startRecoveryPolling();
   syncTimeout = setTimeout(() => {
     if (clientReady || isResettingSession) return;
     log('Connection timed out after QR scan. Try logging out and scanning again.');
     setupServer?.setError(
-      'Sync timed out after scanning. Click "Log out & show new QR" and scan again.'
+      'Sync timed out. On your phone: open WhatsApp, tap "Paused syncing" if shown, then Log out here and scan again.'
     );
+    stopRecoveryPolling();
   }, SYNC_TIMEOUT_MS);
 }
 
@@ -87,6 +111,7 @@ function resetAuthState() {
   hasAuthenticated = false;
   lastQrPayload = null;
   clearSyncTimeout();
+  stopRecoveryPolling();
 }
 
 function sleep(ms) {
@@ -100,7 +125,9 @@ function isBrowserClosedError(err) {
     msg.includes('Session closed') ||
     msg.includes('Protocol error') ||
     msg.includes('Execution context was destroyed') ||
-    msg.includes('browser has disconnected')
+    msg.includes('browser has disconnected') ||
+    msg.includes('detached Frame') ||
+    msg.includes('detached frame')
   );
 }
 
@@ -595,30 +622,75 @@ function monitoringFromConfig() {
   return true;
 }
 
+async function probeSyncStatus() {
+  try {
+    const page = client.pupPage;
+    if (!page || page.isClosed()) return null;
+    return await page.evaluate(() => {
+      try {
+        const Socket = window.require('WAWebSocketModel').Socket;
+        return {
+          state: Socket.state ?? null,
+          hasSynced: Boolean(Socket.hasSynced),
+          wwebjs: typeof window.WWebJS !== 'undefined'
+        };
+      } catch {
+        return null;
+      }
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function handleClientReady() {
+  if (isResettingSession || clientReady) return;
+
+  clearSyncTimeout();
+  stopRecoveryPolling();
+  log('WhatsApp client is ready.');
+  clientReady = true;
+
+  if (DISCOVERY_MODE) {
+    log('DISCOVERY MODE: Listening for messages to print group/user IDs...');
+    log('Send a message in your target group, then copy the IDs from the console.');
+    setupServer?.setReady('Discovery mode — send a message in a group to see IDs.');
+    return;
+  }
+
+  if (targetsResolved) return;
+
+  try {
+    await applyTargets();
+    targetsResolved = true;
+  } catch (err) {
+    log('ERROR resolving targets:', err.message);
+    setupServer?.setReady(`Connected, but target setup failed: ${err.message}. Fix names and click Save.`);
+  }
+}
+
 async function recoverConnectionStateIfNeeded() {
   if (clientReady || isResettingSession) return;
 
   try {
-    const state = await client.getState();
-    if (state !== 'CONNECTED') return;
+    const probe = await probeSyncStatus();
+    if (probe?.state === 'CONNECTED' && probe.hasSynced && probe.wwebjs && client.info) {
+      log('WhatsApp finished syncing — recovering missed ready event.');
+      await handleClientReady();
+      return;
+    }
 
+    if (hasAuthenticated && probe?.state === 'CONNECTED' && !probe.hasSynced) {
+      setupServer?.setAuthenticated(SYNC_WAIT_HINT);
+      return;
+    }
+
+    const state = probe?.state ?? (await client.getState());
+    if (state !== 'CONNECTED') return;
     if (!client.info) return;
 
     log('Session already connected — restoring setup UI state.');
-    clearSyncTimeout();
-    clientReady = true;
-
-    if (!targetsResolved) {
-      try {
-        await applyTargets();
-        targetsResolved = true;
-      } catch (err) {
-        log('ERROR restoring targets after reconnect:', err.message);
-        refreshSetupUiState();
-      }
-    } else {
-      refreshSetupUiState();
-    }
+    await handleClientReady();
   } catch {
     // client not initialized yet
   }
@@ -668,6 +740,7 @@ async function restartAfterDisconnect(reason) {
   try {
     log(`WhatsApp disconnected (${reason}). Restarting with a new QR code…`);
     await safeDestroyClient();
+    await sleep(2000);
     await restartWhatsAppClient({ message: 'Scan QR to log in again…' });
   } catch (err) {
     log('Failed to restart after disconnect:', err.message);
@@ -763,7 +836,7 @@ client.on('loading_screen', (percent, message) => {
   const pct = Math.max(0, Math.min(100, Number(percent) || 0));
   if (pct >= 100) {
     hasAuthenticated = true;
-    setupServer?.setAuthenticated('QR scanned — syncing account…');
+    setupServer?.setAuthenticated(SYNC_WAIT_HINT);
     startSyncTimeout();
     return;
   }
@@ -895,29 +968,10 @@ async function applyTargets() {
 
 applyTargetsRef = applyTargets;
 
-client.on('ready', async () => {
-  if (isResettingSession) return;
-
-  clearSyncTimeout();
-  log('WhatsApp client is ready.');
-  clientReady = true;
-
-  if (DISCOVERY_MODE) {
-    log('DISCOVERY MODE: Listening for messages to print group/user IDs...');
-    log('Send a message in your target group, then copy the IDs from the console.');
-    setupServer?.setReady('Discovery mode — send a message in a group to see IDs.');
-    return;
-  }
-
-  if (targetsResolved) return;
-
-  try {
-    await applyTargets();
-    targetsResolved = true;
-  } catch (err) {
-    log('ERROR resolving targets:', err.message);
-    setupServer?.setReady(`Connected, but target setup failed: ${err.message}. Fix names and click Save.`);
-  }
+client.on('ready', () => {
+  handleClientReady().catch((err) => {
+    log('Error in ready handler:', err.message);
+  });
 });
 
 client.on('disconnected', (reason) => {
